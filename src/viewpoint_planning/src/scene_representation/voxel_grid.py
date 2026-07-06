@@ -99,8 +99,6 @@ class VoxelGrid:
         self.n_target_roi = n_target_roi  # unique mesh voxels in ROI — coverage denominator
         self.n_seen = 0    # voxels seen so far (updated by insert_depth_and_semantics)
         self.n_total = 0   # total ROI voxels (denominator)
-        self.n_semantic_seen = 0   # ROI voxels where p_s > 0.5 (bunny positively detected)
-        self.semantic_coverage = 0.0   # high-water mark: never decreases
         # Define regions of interest around the target
         self.set_target_roi(target_params)
 
@@ -199,12 +197,22 @@ class VoxelGrid:
         # Update the log odds of the occupancy probabilities
         ray_occ = self.ray_occ.clone()
         ray_occ[:, -2:, :] = points_mask.permute(1, 0).repeat(1, 2).unsqueeze(-1)
+        # points_mask == 0 marks invalid pixels (NaN / closer than the near
+        # clip, see raysampler): zero the ENTIRE ray so it updates nothing —
+        # otherwise the intermediate -0.4 free-space values would still carve
+        # through the scene along a ray that measured nothing.
+        invalid_rays = points_mask.view(-1) == 0.0
+        if invalid_rays.any():
+            ray_occ[invalid_rays] = 0.0
         log_odds[..., 0] += ray_occ.view(-1, 1)[valid_indices, -1]
         # Update the log odds of the semantic probabilities
         # semantics is (H, W, 2) row-major; camera_coords is also (H*W, 3) row-major
         # (element k = r*W+c → pixel (u=c, v=r)). Plain view(-1, 2) aligns indices. ✓
         ray_sem = self.ray_sem.clone()
         ray_sem[..., -1, :] = semantics.view(-1, 2)
+        if invalid_rays.any():
+            ray_sem[invalid_rays, :, 0] = 0.0   # no semantic-confidence update
+            ray_sem[invalid_rays, :, 1] = -1.0  # no class-label update
         ray_sem = ray_sem.view(-1, 2)
         log_odds[..., 1] += ray_sem[valid_indices, 0]
         # Convert the log odds back to occupancy and semantic probabilities
@@ -231,22 +239,11 @@ class VoxelGrid:
                 self.target_bounds[2]:self.target_bounds[5],
                 1,  # ch1 = p_occ (occupancy), not ch2 = p_sem (semantic)
             ]
-            sem_voxels = self.voxel_grid[
-                self.target_bounds[0]:self.target_bounds[3],
-                self.target_bounds[1]:self.target_bounds[4],
-                self.target_bounds[2]:self.target_bounds[5],
-                2,  # ch2 = p_sem
-            ]
             n_seen = torch.sum((occ_voxels != 0.5))
             n_total = occ_voxels.numel()
             self.n_seen = int(n_seen.item())
             self.n_total = int(n_total)
             coverage = self.n_seen / float(n_total) * 100
-            # Semantic coverage: high-water mark of ROI voxels with p_s > 0.5 (bunny detected).
-            # Uses max() so it never decreases when subsequent views don't see the bunny.
-            n_semantic_seen = int(torch.sum(sem_voxels > 0.5).item())
-            self.n_semantic_seen = max(self.n_semantic_seen, n_semantic_seen)
-            self.semantic_coverage = self.n_semantic_seen / float(n_total) * 100
             return coverage
 
     def compute_gain(

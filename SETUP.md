@@ -38,4 +38,39 @@ PLANNER=pso OCC=none EXPERIMENT=D ./run_ros2_gz.sh
 
 ## Options
 - PLANNER: rh, gradient, pso, random
-- OCC: none, frontal, half_box, tunnel, well
+- OCC: none, frontal, half_box, tunnel, well, panels
+
+## Camera workspace (side views)
+The camera box wraps around the bunny in -Y so side views are searchable
+(fair_comparison_config.camera_bounds_for_start). Knobs:
+- CAM_HW="x,y,z"        — symmetric halfwidths (default 0.35,0.10,0.22)
+- CAM_WRAP_Y=0.60       — extra -Y extension past the bunny; 0 = old frontal-only box
+- CAM_MIN_STANDOFF=0.50 — min camera-target distance, enforced by ALL planners.
+  Must stay above the Gazebo D455 near clip (0.40 m) + bunny half-extent:
+  closer than the clip the object vanishes from depth AND color images.
+Unreachable poses in the wrapped box fail move_arm_to_pose and are pruned at
+runtime by the reach-bounds tightening in viewpoint_planning.run_rh().
+
+## OCC=panels1..4 — staged occlusion scenarios (make_panel_world.py)
+Build once, then just switch the OCC label — the launch file picks the world
+(ur5e_world_panels<N>.sdf) and the planners pick the F1-occluder manifest
+(panels_occluders_stage<N>.json) from the label automatically:
+    python3 make_panel_world.py --stages-all
+    OCC=panels2 ros2 launch ur5e_l515_description move_group_gz_ur5e.launch.py
+    OCC=panels2 PLANNER=gradient ./run_ros2_gz.sh
+Stages (walls 14.4 cm tall, bottom-anchored → top 5.1 cm of bunny/ears always
+visible; walls span each face edge-to-edge and TOUCH at the corners):
+    panels1 = side wall | panels2 = +front (L) | panels3 = +other side (U) |
+    panels4 = +back (4 walls, top open)
+    --side right (default) = easier series (arm can barely reach +X anyway);
+    --side left = harder series (blocks the arm-reachable -X side)
+Wall height knob: --wall-height 0.144. Other modes: --box N (sealed box,
+1..6 faces, --box 6 fully closed), --az 0,60,300 (ring; 0=front/+Y, 90=+X);
+these write the single ur5e_world_panels.sdf, run them with bare OCC=panels.
+Then RESTART the Gazebo stack and run with any OCC label starting with
+"panels" — use the stage as suffix so results dirs are distinct:
+    OCC=panels3 ros2 launch ur5e_l515_description move_group_gz_ur5e.launch.py
+    OCC=panels3 PLANNER=gradient ./run_ros2_gz.sh
+The script writes the world to src + install dirs (no colcon rebuild) and the
+panel AABBs to src/simulation_environment/panels_occluders.json, which the
+planners load to exclude panel voxels from F1 scoring.

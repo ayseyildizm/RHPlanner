@@ -157,7 +157,8 @@ def run_single_trial(trial_idx, occ, run_dir):
     recon_snapshots = []
     for i in range(NUM_ITERS):
         print(f"--- RH Iteration {i + 1}/{NUM_ITERS} ---")
-        vp._diagnose_f1 = (EXPERIMENT == "D" and i == NUM_ITERS - 1)
+        vp._diagnose_f1 = ((EXPERIMENT == "D" and i == NUM_ITERS - 1)
+                           or os.environ.get("DIAG_F1", "0") != "0")
         vp.run_rh()
         rh = vp.rh_planner
         snap = rh.target_voxels
@@ -190,7 +191,6 @@ def run_single_trial(trial_idx, occ, run_dir):
     results["tp_series"] = vp.tp_rh.tolist()
     results["fp_series"] = vp.fp_rh.tolist()
     results["fn_series"] = vp.fn_rh.tolist()
-    results["semantic_coverage_series"] = vp.sem_coverages_rh.tolist() if hasattr(vp, "sem_coverages_rh") else []
 
     save_and_print(results, prefix=os.path.join(trial_dir, "metrics"),
                    experiment=EXPERIMENT)

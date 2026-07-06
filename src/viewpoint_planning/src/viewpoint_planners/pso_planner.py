@@ -12,7 +12,8 @@ from viewpoint_planners.planner_eval_mixin import PlannerEvalMixin, init_eval_st
 from viewpoint_planners.fair_comparison_config import (
     GRID_SIZE as FC_GRID_SIZE,
     VOXEL_SIZE as FC_VOXEL_SIZE,
-    CAMERA_BOUNDS_HALFWIDTHS,
+    MIN_STANDOFF,
+    camera_bounds_for_start,
 )
 
 
@@ -89,10 +90,8 @@ class PsoPlanner(PlannerEvalMixin):
         np.random.seed(int(time.time()))
 
         random_values = np.random.rand(self.n_particles, 3)
-        bx, by, bz = float(CAMERA_BOUNDS_HALFWIDTHS[0]), float(CAMERA_BOUNDS_HALFWIDTHS[1]), float(CAMERA_BOUNDS_HALFWIDTHS[2])
-        random_values[:, 0] = random_values[:, 0] * (2*bx) + start_pose[0] - bx
-        random_values[:, 1] = random_values[:, 1] * (2*by) + start_pose[1] - by
-        random_values[:, 2] = random_values[:, 2] * (2*bz) + start_pose[2] - bz
+        cam_lo, cam_hi = camera_bounds_for_start(np.asarray(start_pose[:3]))
+        random_values = random_values * (cam_hi - cam_lo) + cam_lo
 
         self.X = torch.tensor(
             random_values, dtype=torch.float32, device=self.device,
@@ -149,12 +148,12 @@ class PsoPlanner(PlannerEvalMixin):
         self.target_params = torch.tensor(
             target_params, dtype=torch.float32, device=self.device,
         )
-        bx, by, bz = float(CAMERA_BOUNDS_HALFWIDTHS[0]), float(CAMERA_BOUNDS_HALFWIDTHS[1]), float(CAMERA_BOUNDS_HALFWIDTHS[2])
+        cam_lo, cam_hi = camera_bounds_for_start(np.asarray(start_pose[:3]))
         self.camera_bounds = torch.tensor(
             [
-                [start_pose[0] - bx, start_pose[1] - by, start_pose[2] - bz,
+                [*cam_lo.tolist(),
                  target_params[0] - 0.1, target_params[1] - 0.1, target_params[2] - 0.1],
-                [start_pose[0] + bx, start_pose[1] + by, start_pose[2] + bz,
+                [*cam_hi.tolist(),
                  target_params[0] + 0.1, target_params[1] + 0.1, target_params[2] + 0.1],
             ],
             dtype=torch.float32, device=self.device,
@@ -192,6 +191,15 @@ class PsoPlanner(PlannerEvalMixin):
                     bouncing_force = self.camera_bounds[0][j] - self.X[i][j]
                     self.X[i][j] = self.camera_bounds[0][j]
                     self.V[i][j] = bouncing_force * self.bc
+            # Sensor near-clip standoff: push particles closer than
+            # MIN_STANDOFF to the target radially back out.
+            vec = self.X[i, :3] - self.target_params[:3]
+            dist = torch.norm(vec)
+            if dist < MIN_STANDOFF:
+                if dist < 1e-6:
+                    vec = torch.tensor([0.0, 1.0, 0.0], device=self.device)
+                    dist = torch.tensor(1.0, device=self.device)
+                self.X[i, :3] = self.target_params[:3] + vec / dist * MIN_STANDOFF
 
         self.particle_trajectories.append(self.X.detach().cpu().numpy())
 

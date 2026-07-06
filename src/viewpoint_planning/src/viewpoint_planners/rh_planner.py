@@ -77,21 +77,22 @@ class RHPlanner:
             self.robot_reach_bounds = None
         # Axis-aligned camera bounds.
         # MATCHED EXACTLY to GradientNBVPlanner's camera box so both planners
-        # search the same physical camera workspace (fair comparison). Burusa's
-        # planner uses start_pose +/- CAMERA_BOUNDS_HALFWIDTHS; we mirror that here
-        # instead of the old target +/- r_max cube. The shell (if re-enabled via
-        # use_spherical_bounds) still uses r_min/r_max independently.
+        # search the same physical camera workspace (fair comparison). Both use
+        # fair_comparison_config.camera_bounds_for_start(), which wraps the box
+        # around the object in -Y (CAM_WRAP_Y) so side views are searchable.
+        # The shell (if re-enabled via use_spherical_bounds) still uses
+        # r_min/r_max independently.
         start_np = np.asarray(start_pose[:3], dtype=np.float32)
-        from viewpoint_planners.fair_comparison_config import CAMERA_BOUNDS_HALFWIDTHS
-        bounds_halfwidths = CAMERA_BOUNDS_HALFWIDTHS
+        from viewpoint_planners.fair_comparison_config import (
+            camera_bounds_for_start,
+            MIN_STANDOFF,
+        )
         self.camera_bounds = torch.tensor(
-            [
-                (start_np - bounds_halfwidths).tolist(),
-                (start_np + bounds_halfwidths).tolist(),
-            ],
+            camera_bounds_for_start(start_np),
             dtype=torch.float32,
             device=self.device,
         )
+        self.min_standoff = MIN_STANDOFF
 
         # Voxel grid
         self.voxel_grid = VoxelGrid(
@@ -190,7 +191,21 @@ class RHPlanner:
             vec  = torch.tensor([0.0, 1.0, 0.0], device=self.device)
             dist = torch.tensor(1.0, device=self.device)
         r = torch.clamp(dist, self.r_min, self.r_max)
-        return self.target_params + vec / dist * r  # ayni yonde, dogru uzaklikta 
+        return self.target_params + vec / dist * r  # ayni yonde, dogru uzaklikta
+
+    def _push_to_min_standoff(self, pos: torch.Tensor) -> torch.Tensor:
+        """Push pos radially away from the target if it is closer than
+        min_standoff. Needed since the wrapped camera box (CAM_WRAP_Y) contains
+        the object itself: without this, samples could land inside the bunny
+        or below the D455 minimum depth range."""
+        vec = pos - self.target_params
+        dist = torch.norm(vec)
+        if dist >= self.min_standoff:
+            return pos
+        if dist < 1e-6:
+            vec = torch.tensor([0.0, 1.0, 0.0], device=self.device)
+            dist = torch.tensor(1.0, device=self.device)
+        return self.target_params + vec / dist * self.min_standoff
 
     # ------------------------------------------------------------------
     # Candidate generation
@@ -246,6 +261,13 @@ class RHPlanner:
                     new_pos = lo + torch.rand(3, device=self.device) * (hi - lo)
 
             new_pos = self._project_to_shell(new_pos)
+            # Standoff push BEFORE the reach clamp: the clamp must win, or the
+            # push can move candidates back outside the (runtime-tightened)
+            # reach bounds and the arm gets re-commanded to unreachable poses.
+            # A clamped pose can end up slightly inside the standoff sphere;
+            # that is benign since sub-near-clip pixels are neutralized in the
+            # ray sampler.
+            new_pos = self._push_to_min_standoff(new_pos)
             if not self._within_reach(new_pos) and self.robot_reach_bounds is not None:
                 new_pos = torch.max(
                     torch.min(new_pos, self.robot_reach_bounds[1]),

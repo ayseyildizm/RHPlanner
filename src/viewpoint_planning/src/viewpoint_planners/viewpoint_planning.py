@@ -17,6 +17,7 @@ from viewpoint_planners.fair_comparison_config import (
     reach_bounds_for_start,
     get_target_position as fc_get_target_position,
     GRID_SIZE as FC_GRID_SIZE,
+    load_panel_occluders,
 )
 
 
@@ -27,6 +28,20 @@ class ViewpointPlanning:
         # ROS 2
         self.arm_control = ArmControlClient()
         self.perceiver = Perceiver()
+        # Diagnostic TF listener (DIAG_TF=1): compares the commanded camera
+        # pose against the TF-actual pose at capture time, to separate
+        # "arm did not reach the pose" from "integration frame mismatch".
+        self._tf_buffer = None
+        if os.environ.get("DIAG_TF", "0") != "0":
+            try:
+                import ros2_node
+                from tf2_ros import Buffer, TransformListener
+                node = ros2_node.get_node()
+                self._tf_buffer = Buffer()
+                self._tf_listener = TransformListener(self._tf_buffer, node)
+                print("[DIAG_TF] TF listener active")
+            except Exception as e:
+                print(f"[DIAG_TF] TF listener unavailable: {e}")
         self.viewpoint_sampler = ViewpointSampler()
         self.sdf_spawner = SDFSpawner()
 
@@ -120,6 +135,7 @@ class ViewpointPlanning:
             "half_box": self.spawn_half_box_occlusion,
             "tunnel":   self.spawn_tunnel_occlusion,
             "well":     self.spawn_well_occlusion,
+            "panels":   self.spawn_panels_occlusion,
         }.get(occ, self.spawn_no_occlusion)
         print(f"[Occlusion] scenario = {occ}")
         spawn_fn()
@@ -166,6 +182,11 @@ class ViewpointPlanning:
     def spawn_well_occlusion(self):
         pass  # panels defined in ur5e_world_well.sdf
 
+    def spawn_panels_occlusion(self):
+        # N identical panels defined in ur5e_world_panels.sdf; regenerate with
+        # ~/Desktop/RecedingHorizon/make_panel_world.py --az <deg,deg,...>
+        pass
+
     # -------------------------------------------------------------
     # RH execution
     # -------------------------------------------------------------
@@ -183,6 +204,7 @@ class ViewpointPlanning:
         time.sleep(1.0)  # ROS 2: time.sleep instead of rospy.sleep
 
         if is_success:
+            self._diag_pose_vs_tf()
             depth_image, _, semantics = self.perceiver.run()
             if depth_image is not None and semantics is not None:
                 coverage = self.rh_planner.update_voxel_grid(
@@ -210,10 +232,17 @@ class ViewpointPlanning:
                 self.rh_planner.robot_reach_bounds = torch.tensor(
                     bounds, dtype=torch.float32, device=self.rh_planner.device
                 )
-                print(f'[VP] Reach bounds tightened: y=[{bounds[0][1]:.3f},{bounds[1][1]:.3f}]')
-            if len(self.trail_rh) >= 2:
+                print('[VP] Reach bounds tightened: '
+                      f'x=[{bounds[0][0]:.3f},{bounds[1][0]:.3f}] '
+                      f'y=[{bounds[0][1]:.3f},{bounds[1][1]:.3f}] '
+                      f'z=[{bounds[0][2]:.3f},{bounds[1][2]:.3f}]')
+            # The failed pose was never reached: drop it from the trail so the
+            # trajectory plot and step distances only reflect executed poses.
+            if self.trail_rh:
+                self.trail_rh.pop()
+            if self.trail_rh:
                 self.rh_planner.current_pos = torch.tensor(
-                    self.trail_rh[-2], dtype=torch.float32,
+                    self.trail_rh[-1], dtype=torch.float32,
                     device=self.rh_planner.device
                 )
             coverage = self.coverages_rh[-1]
@@ -230,11 +259,15 @@ class ViewpointPlanning:
         )
 
         occ_positions = None
-        if getattr(self, "_occ_type", "none") == "tunnel":
+        occ_type = getattr(self, "_occ_type", "none")
+        if occ_type == "tunnel":
             occ_positions = [
                 (np.array([0.43, -0.25, 1.10]), np.array([0.012, 0.052, 0.102])),
                 (np.array([0.57, -0.25, 1.10]), np.array([0.012, 0.052, 0.102])),
             ]
+        elif occ_type.startswith("panels"):
+            # generated scenario — AABBs from the make_panel_world.py manifest
+            occ_positions = load_panel_occluders()
         f1, recall, precision = self.rh_planner.calculate_F1(
             occluder_positions=occ_positions, diagnose=self._diagnose_f1)
         self.f1_rh = np.append(self.f1_rh, f1)
@@ -265,6 +298,34 @@ class ViewpointPlanning:
         return coverage, loss, f1, recall, precision, n_evals
 
     # HELPERS
+    def _diag_pose_vs_tf(self):
+        """DIAG_TF=1: print commanded vs TF-actual camera pose at capture time.
+        A cm-level position delta means the arm is NOT at the commanded pose
+        when the image is taken (execution/tolerance problem); a mm-level
+        delta means the pose is fine and any misalignment must come from the
+        integration frames."""
+        if self._tf_buffer is None:
+            return
+        import rclpy.time
+        for frame in ("camera_color_optical_frame", "camera_color_frame",
+                      "camera_link"):
+            try:
+                tfs = self._tf_buffer.lookup_transform(
+                    "world", frame, rclpy.time.Time())
+                t = tfs.transform.translation
+                q = tfs.transform.rotation
+                cmd = self.camera_pose
+                dp = np.array([t.x, t.y, t.z]) - cmd[:3]
+                print(f"[DIAG_TF] {frame}: actual=({t.x:.4f},{t.y:.4f},{t.z:.4f}) "
+                      f"cmd=({cmd[0]:.4f},{cmd[1]:.4f},{cmd[2]:.4f}) "
+                      f"|dpos|={np.linalg.norm(dp)*1000:.1f}mm  "
+                      f"tf_quat(wxyz)=({q.w:.4f},{q.x:.4f},{q.y:.4f},{q.z:.4f}) "
+                      f"cmd_quat=({cmd[3]:.4f},{cmd[4]:.4f},{cmd[5]:.4f},{cmd[6]:.4f})")
+                return
+            except Exception:
+                continue
+        print("[DIAG_TF] no camera frame found in TF")
+
     def _clamp_to_rh_bounds(self, position):
         bounds = self.rh_planner.camera_bounds.detach().cpu().numpy()
         return np.clip(position, bounds[0], bounds[1])
@@ -312,43 +373,59 @@ class ViewpointPlanning:
                 raise ValueError("coffee_mug positions array not found in DAE.")
             vertices = np.array(list(map(float, arr.text.split()))).reshape(-1, 3)
             # coffee_mug DAE: Z-up, no axis swap, scale 1.0, placed at bunny world pos
-            translation = np.array([0.5, -0.30, 1.0])
+            translation = np.array([0.5, -0.30, 0.85])
             transformed_coords = vertices + translation
         elif target == "tomato":
             file_path = f"{meshes}/tomato6.dae"
             root = ET.parse(file_path).getroot()
-            # Only Fruit1-4 — branches/leaves are natural occluders, not ground truth
-            fruit_nodes = {"Fruit1", "Fruit2", "Fruit3", "Fruit4"}
-            fruit_arr_ids = set()
+            tt = os.environ.get("TOMATO_TARGET", "blossom").lower()
+            if tt == "fruit":
+                target_nodes = {"Fruit1", "Fruit2", "Fruit3", "Fruit4"}
+            elif tt == "all":
+                target_nodes = {"Branch1", "Leaf1", "Leaf2",
+                                "Blossom1", "Blossom2", "Blossom3",
+                                "Fruit1", "Fruit2", "Fruit3", "Fruit4"}
+            else:  # blossom
+                target_nodes = {"Blossom1", "Blossom2", "Blossom3"}
+            arr_ids = set()
             for node in root.findall(".//ns:visual_scene//ns:node", ns):
-                if node.get("name", "") in fruit_nodes:
+                if node.get("name", "") in target_nodes:
                     for inst in node.findall(".//ns:instance_geometry", ns):
                         url = inst.get("url", "").lstrip("#")
-                        fruit_arr_ids.add(url.replace("-mesh", "") + "-mesh-positions-array")
+                        arr_ids.add(url.replace("-mesh", "") + "-mesh-positions-array")
             all_verts = []
             for fa in root.findall(".//ns:float_array", ns):
-                if fa.get("id", "") in fruit_arr_ids:
+                if fa.get("id", "") in arr_ids:
                     verts = np.array(list(map(float, fa.text.split()))).reshape(-1, 3)
                     all_verts.append(verts)
             if not all_verts:
-                raise RuntimeError("Fruit1-4 position arrays not found in tomato6.dae")
+                raise RuntimeError(f"Tomato {tt} arrays not found in tomato6.dae")
             vertices = np.vstack(all_verts)
             # COLLADA Y-up → Gazebo Z-up: world=(dae_x, -dae_z, dae_y)
             vertices_converted = np.column_stack([vertices[:, 0], -vertices[:, 2], vertices[:, 1]])
             translation = np.array([0.5, -0.50, 0.9])
             transformed_coords = vertices_converted * 0.4 + translation
         else:
+            # IDENTICAL to test_gradient_node.get_mesh_coordinates: both
+            # planners MUST score against the same GT mesh. The old transform
+            # here ((x,z,y) swap, -1.2 x-scale, translation y=-0.25) was stale:
+            # it left the GT mesh 5 cm in front of and 180°-rotated from the
+            # Gazebo bunny, so RH's (correct) reconstructions scored as FPs
+            # while GradientNBV (using the transform below) scored cleanly.
             file_path = f"{meshes}/bunny.dae"
             root = ET.parse(file_path).getroot()
             arr = root.find(".//ns:float_array[@id='bun_zipper-mesh-positions-array']", ns)
             if arr is None:
                 raise ValueError("bunny positions array not found in DAE.")
             vertices = np.array(list(map(float, arr.text.split()))).reshape(-1, 3)
-            vertices_swapped = vertices[:, [0, 2, 1]]
-            scale = np.array([-1.2, 1.2, 1.2])
-            z_corr = float(os.environ.get("MESH_Z_CORR", 0.0))
-            translation = np.array([0.5, -0.25, 1.0 - z_corr])
-            transformed_coords = vertices_swapped * scale + translation
+            vertices_converted = np.column_stack([
+                -vertices[:, 0],
+                vertices[:, 2],
+                vertices[:, 1] - 0.05,
+            ])
+            scale = np.array([1.2, 1.2, 1.2])
+            translation = np.array([0.5, -0.30, 0.85])
+            transformed_coords = vertices_converted * scale + translation
 
         mesh_tree = KDTree(transformed_coords)
         return transformed_coords, mesh_tree

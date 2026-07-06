@@ -11,9 +11,10 @@ from utils.torch_utils import look_at_rotation, transform_from_rotation_translat
 from utils.rviz_visualizer import RvizVisualizer
 
 try:
-    from fair_comparison_config import CAMERA_BOUNDS_HALFWIDTHS, ROI_HALF
+    from fair_comparison_config import camera_bounds_for_start, MIN_STANDOFF, ROI_HALF
 except ModuleNotFoundError:
-    from viewpoint_planners.fair_comparison_config import CAMERA_BOUNDS_HALFWIDTHS, ROI_HALF
+    from viewpoint_planners.fair_comparison_config import (
+        camera_bounds_for_start, MIN_STANDOFF, ROI_HALF)
 
 
 class GradientNBVPlanner(nn.Module):
@@ -88,12 +89,16 @@ class GradientNBVPlanner(nn.Module):
         self.target_params = torch.tensor(
             target_params, dtype=torch.float32, device=self.device,
         )
-        bx, by, bz = float(CAMERA_BOUNDS_HALFWIDTHS[0]), float(CAMERA_BOUNDS_HALFWIDTHS[1]), float(CAMERA_BOUNDS_HALFWIDTHS[2])
+        # True object centre for the near-clip standoff — self.target_params
+        # is re-pointed to the OPTIMIZED (drifting) target in loss(), but the
+        # physical sensor limit is about the actual object.
+        self.standoff_center = self.target_params[:3].clone()
+        cam_lo, cam_hi = camera_bounds_for_start(np.asarray(start_pose[:3]))
         self.camera_bounds = torch.tensor(
             [
-                [start_pose[0] - bx, start_pose[1] - by, start_pose[2] - bz,
+                [*cam_lo.tolist(),
                  target_params[0] - 0.1, target_params[1] - 0.1, target_params[2] - 0.1],
-                [start_pose[0] + bx, start_pose[1] + by, start_pose[2] + bz,
+                [*cam_hi.tolist(),
                  target_params[0] + 0.1, target_params[1] + 0.1, target_params[2] + 0.1],
             ],
             dtype=torch.float32, device=self.device,
@@ -146,6 +151,18 @@ class GradientNBVPlanner(nn.Module):
             self.camera_params.data = torch.clamp(
                 self.camera_params.data, self.camera_bounds[0], self.camera_bounds[1]
             )
+            # Enforce the sensor near-clip standoff: closer than MIN_STANDOFF
+            # the D455 clips the object out of both depth and color images,
+            # so the optimizer must not walk the camera into that zone.
+            vec = self.camera_params.data[:3] - self.standoff_center
+            dist = torch.norm(vec)
+            if dist < MIN_STANDOFF:
+                if dist < 1e-6:
+                    vec = torch.tensor([0.0, 1.0, 0.0], device=self.device)
+                    dist = torch.tensor(1.0, device=self.device)
+                self.camera_params.data[:3] = (
+                    self.standoff_center + vec / dist * MIN_STANDOFF
+                )
         viewpoint = self.get_viewpoint()
         loss = loss.detach().cpu().numpy()
         return viewpoint, loss, self.num_samples

@@ -10,7 +10,8 @@ from viewpoint_planners.planner_eval_mixin import PlannerEvalMixin, init_eval_st
 from viewpoint_planners.fair_comparison_config import (
     GRID_SIZE as FC_GRID_SIZE,
     VOXEL_SIZE as FC_VOXEL_SIZE,
-    CAMERA_BOUNDS_HALFWIDTHS,
+    camera_bounds_for_start,
+    push_out_of_standoff,
 )
 
 
@@ -82,12 +83,12 @@ class RandomPlanner(PlannerEvalMixin):
         self.target_params = torch.tensor(
             target_params, dtype=torch.float32, device=self.device,
         )
-        bx, by, bz = float(CAMERA_BOUNDS_HALFWIDTHS[0]), float(CAMERA_BOUNDS_HALFWIDTHS[1]), float(CAMERA_BOUNDS_HALFWIDTHS[2])
+        cam_lo, cam_hi = camera_bounds_for_start(np.asarray(start_pose[:3]))
         self.camera_bounds = np.array(
             [
-                [start_pose[0] - bx, start_pose[1] - by, start_pose[2] - bz,
+                [*cam_lo.tolist(),
                  target_params[0] - 0.1, target_params[1] - 0.1, target_params[2] - 0.1],
-                [start_pose[0] + bx, start_pose[1] + by, start_pose[2] + bz,
+                [*cam_hi.tolist(),
                  target_params[0] + 0.1, target_params[1] + 0.1, target_params[2] + 0.1],
             ]
         )
@@ -115,6 +116,10 @@ class RandomPlanner(PlannerEvalMixin):
         )
         random_index = np.random.randint(self.num_samples)
         viewpoint = view_samples[random_index, :7]
+        # Sensor near-clip standoff (see fair_comparison_config.MIN_STANDOFF)
+        viewpoint = push_out_of_standoff(
+            viewpoint, self.target_params.cpu().numpy()
+        )
         self.target_position = view_samples[random_index, 7:]
         self.viewpoint = viewpoint
         return self.viewpoint, 0.0, 1

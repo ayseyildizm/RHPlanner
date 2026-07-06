@@ -47,6 +47,7 @@ try:
         get_target_position as fc_get_target_position,
         jitter_start_pose as fc_jitter_start_pose,
         seed_for_trial as fc_seed_for_trial,
+        load_panel_occluders,
     )
 except ModuleNotFoundError:
     from viewpoint_planners.fair_comparison_config import (
@@ -54,6 +55,7 @@ except ModuleNotFoundError:
         get_target_position as fc_get_target_position,
         jitter_start_pose as fc_jitter_start_pose,
         seed_for_trial as fc_seed_for_trial,
+        load_panel_occluders,
     )
 
 from plots.plot_coverage import plot_coverage_progression
@@ -83,19 +85,27 @@ def get_mesh_coordinates():
         root = ET.parse(f"{meshes}/coffee_mug.dae").getroot()
         arr = root.find(".//ns:float_array[@id='coffee_mug-mesh-positions-array']", ns)
         vertices = np.array(list(map(float, arr.text.split()))).reshape(-1, 3)
-        coords = vertices + np.array([0.5, -0.30, 1.0])
+        coords = vertices + np.array([0.5, -0.30, 0.85])
     elif target == "tomato":
         root = ET.parse(f"{meshes}/tomato6.dae").getroot()
-        fruit_nodes = {"Fruit1", "Fruit2", "Fruit3", "Fruit4"}
-        fruit_arr_ids = set()
+        tt = os.environ.get("TOMATO_TARGET", "blossom").lower()
+        if tt == "fruit":
+            target_nodes = {"Fruit1", "Fruit2", "Fruit3", "Fruit4"}
+        elif tt == "all":
+            target_nodes = {"Branch1", "Leaf1", "Leaf2",
+                            "Blossom1", "Blossom2", "Blossom3",
+                            "Fruit1", "Fruit2", "Fruit3", "Fruit4"}
+        else:  # blossom
+            target_nodes = {"Blossom1", "Blossom2", "Blossom3"}
+        arr_ids = set()
         for node in root.findall(".//ns:visual_scene//ns:node", ns):
-            if node.get("name", "") in fruit_nodes:
+            if node.get("name", "") in target_nodes:
                 for inst in node.findall(".//ns:instance_geometry", ns):
                     url = inst.get("url", "").lstrip("#")
-                    fruit_arr_ids.add(url.replace("-mesh", "") + "-mesh-positions-array")
+                    arr_ids.add(url.replace("-mesh", "") + "-mesh-positions-array")
         all_verts = []
         for fa in root.findall(".//ns:float_array", ns):
-            if fa.get("id", "") in fruit_arr_ids:
+            if fa.get("id", "") in arr_ids:
                 verts = np.array(list(map(float, fa.text.split()))).reshape(-1, 3)
                 all_verts.append(verts)
         vertices = np.vstack(all_verts)
@@ -112,7 +122,7 @@ def get_mesh_coordinates():
             vertices[:, 1] - 0.05,
         ])
         scale = np.array([1.2, 1.2, 1.2])
-        coords = vertices_converted * scale + np.array([0.5, -0.30, 1.0])
+        coords = vertices_converted * scale + np.array([0.5, -0.30, 0.85])
 
     return coords, KDTree(coords)
 
@@ -158,7 +168,7 @@ def run_single_trial(trial_idx, occ, run_dir, mesh_coords, mesh_tree,
     # that every planner starts from an identical 100% occluded baseline.
     planner.set_occluded_mesh_points()
 
-    coverages = [0.0]; sem_coverages = [0.0]; recalls = [0.0]; precisions = [0.0]
+    coverages = [0.0]; recalls = [0.0]; precisions = [0.0]
     distances = [0.0]; times = [0.0]; ray_calls = [0]
     tp = [0]; fp = [0]; fn = [0]
     sigmas = [0.0]; occ_recalls = [0.0]
@@ -185,7 +195,6 @@ def run_single_trial(trial_idx, occ, run_dir, mesh_coords, mesh_tree,
                 cov = float(cov) if cov is not None else coverages[-1]
             else:
                 cov = coverages[-1]
-            sem_cov = planner.voxel_grid.semantic_coverage
             voxels_seen.append(planner.voxel_grid.n_seen)
             voxels_total.append(planner.voxel_grid.n_total)
             d = math.sqrt(sum((viewpoint[k]-trail[-1][k])**2 for k in range(3)))
@@ -193,12 +202,10 @@ def run_single_trial(trial_idx, occ, run_dir, mesh_coords, mesh_tree,
             distances.append(distances[-1] + d)
         else:
             cov = coverages[-1]
-            sem_cov = sem_coverages[-1]
             voxels_seen.append(voxels_seen[-1])
             voxels_total.append(voxels_total[-1])
             distances.append(distances[-1])
         coverages.append(cov)
-        sem_coverages.append(sem_cov)
         times.append(times[-1] + (time.time() - t0))
 
         diag = (EXPERIMENT == "D" and i == NUM_ITERS - 1)
@@ -224,6 +231,10 @@ def run_single_trial(trial_idx, occ, run_dir, mesh_coords, mesh_tree,
                 (np.array([0.52, -0.18, 1.08]), np.array([0.130, 0.010, 0.080])),
                 (np.array([0.52, -0.42, 1.08]), np.array([0.130, 0.010, 0.080])),
             ]
+        elif occ.startswith("panels"):
+            # generated scenario — AABBs come from the manifest written by
+            # make_panel_world.py (see fair_comparison_config)
+            occ_positions = load_panel_occluders()
         f1, rec, prec = planner.calculate_F1(
             occluder_positions=occ_positions, diagnose=diag)
         recalls.append(rec); precisions.append(prec)
@@ -237,7 +248,7 @@ def run_single_trial(trial_idx, occ, run_dir, mesh_coords, mesh_tree,
             snap.copy() if isinstance(snap, np.ndarray) and snap.ndim == 2
             else np.zeros((0, 3)))
 
-        print(f"[GradNBV] coverage={cov:.4f} | sem_coverage={sem_cov:.4f} | "
+        print(f"[GradNBV] coverage={cov:.4f} | "
               f"loss={float(loss):.4f} | F1={f1:.4f} | recall={rec:.4f} | "
               f"precision={prec:.4f} | occ_recall={occ_recalls[-1]:.4f}")
         planner.visualize()
@@ -263,7 +274,6 @@ def run_single_trial(trial_idx, occ, run_dir, mesh_coords, mesh_tree,
     results["tp_series"] = tp; results["fp_series"] = fp; results["fn_series"] = fn
     results["sigma_series"] = sigmas
     results["occluded_recall_series"] = occ_recalls
-    results["semantic_coverage_series"] = sem_coverages
     save_and_print(results, prefix=os.path.join(trial_dir, "metrics"),
                    experiment=EXPERIMENT)
 

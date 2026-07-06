@@ -103,13 +103,27 @@ class RaySampler:
         )
         # If depth image is provided, use it to compute the max depth
         # Otherwise, use the far clipping plane
+        invalid = None
         if depth_image is not None:
-            depth_image[torch.isnan(depth_image)] = self.z_far
-            depth_image[torch.isinf(depth_image)] = self.z_far
-            # depth=0 or below reliable range → no valid reading; treat as z_far (free-space,
-            # no hit). Without this, depth=0 creates a "hit at camera origin" (wrong), and
-            # sub-z_near depths (e.g. D455 < 0.40 m) create false hits inside the ROI.
-            depth_image[(depth_image <= 0) | (depth_image < self.z_near)] = self.z_far
+            # REP 117 depth conventions: NaN = invalid measurement,
+            # -Inf = surface closer than the near clip (0.40 m on the D455),
+            # +Inf = no return within range → genuine free space out to z_far.
+            no_return = torch.isinf(depth_image) & (depth_image > 0)
+            invalid = (
+                torch.isnan(depth_image)
+                | (depth_image <= 0)
+                | (depth_image < self.z_near)
+            )
+            depth_image[no_return] = self.z_far
+            # A too-close/invalid pixel carries NO scene information. It must
+            # NOT become a z_far free-space ray: when the camera is closer to
+            # the object than the near clip, the object fills the image, and
+            # turning those pixels into full-length rays carves straight
+            # through it (erasing reconstructed voxels) while inflating the
+            # seen-voxel coverage. Instead collapse the ray to zero length at
+            # z_near and neutralize its update via points_mask == 0
+            # (handled in voxel_grid.insert_depth_and_semantics).
+            depth_image[invalid] = self.z_near
             # camera_coords is (H*W, 3) with row-major ordering (H outer, W inner):
             # element k = r*W + c → pixel (u=c, v=r). depth_image is (H, W), so a
             # plain row-major flatten gives index k = r*W + c → depth_image[r, c]. ✓
@@ -122,6 +136,8 @@ class RaySampler:
             )
         # Create a mask that is log odds 0.9 if the depth is less than far and log odds of 0.4 otherwise
         points_mask = torch.where(max_depths < self.z_far, 2.2, -0.4)
+        if invalid is not None:
+            points_mask = points_mask.masked_fill(invalid.view(1, -1), 0.0)
         # Transform the camera coordinates to world coordinates
         camera_coords = self.camera_coords.clone().requires_grad_()
         ray_origins = (camera_coords * min_depths.unsqueeze(-1)).view(batch_size, -1, 3)

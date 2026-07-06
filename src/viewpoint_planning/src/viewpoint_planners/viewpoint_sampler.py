@@ -168,9 +168,6 @@ class ViewpointSampler:
         position = np.array(
             [target_position[0], target_position[1] + distance, target_position[2]]
         )
-        #position = np.array(
-        #    [target_position[0], target_position[1] + distance, target_position[2] + 0.10]
-        #)
         orientation = look_at_rotation(position, target_position)
         pose = np.concatenate((position, orientation))
         return pose
