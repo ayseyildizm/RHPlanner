@@ -33,7 +33,7 @@ import os
 def compute_all_metrics(coverages, recalls, precisions, distances, times,
                         ray_calls, method_name, occlusion_type, params,
                         target_voxels=None, mesh_coordinates=None, max_achievable_coverage=100.0,
-                        voxels_seen=None, voxels_total=None):
+                        voxels_seen=None, voxels_total=None, move_successes=None):
     """
     Compute all evaluation metrics from raw per-iteration arrays.
     
@@ -49,6 +49,10 @@ def compute_all_metrics(coverages, recalls, precisions, distances, times,
         params: dict — planner parameters
         target_voxels: np.array or None — reconstructed target points (for Chamfer/Hausdorff)
         mesh_coordinates: np.array or None — ground truth mesh points (for Chamfer/Hausdorff)
+        move_successes: list[bool] or None — per-iteration arm-move outcome
+            (True=arm reached the commanded viewpoint, False=IK-unreachable /
+            planning failure / execution failure / timeout). One entry per
+            planning iteration (length = n-1).
     """
     n = len(coverages)
 
@@ -152,6 +156,22 @@ def compute_all_metrics(coverages, recalls, precisions, distances, times,
     coverage_at_key = {str(k): round(coverages[min(k, n - 1)], 2) for k in key_iters}
 
     # =========================================================
+    # MOVE / IK FAILURES
+    # =========================================================
+    # A planning iteration is a FAILED MOVE when the arm could not reach the
+    # commanded viewpoint: MoveIt returned no plan (IK-unreachable / planning
+    # failure), execution failed, or the service timed out
+    # (arm_control_client.move_arm_to_pose() -> False). On such an iteration the
+    # loop holds the previous coverage and adds no trajectory distance.
+    if move_successes is not None:
+        total_moves = len(move_successes)
+        failed_moves = int(sum(1 for s in move_successes if not s))
+        move_success_rate = (round(100.0 * (total_moves - failed_moves) / total_moves, 1)
+                             if total_moves else None)
+    else:
+        total_moves = failed_moves = move_success_rate = None
+
+    # =========================================================
     # VISIBILITY EFFICIENCY
     # =========================================================
 
@@ -194,6 +214,13 @@ def compute_all_metrics(coverages, recalls, precisions, distances, times,
 
         # Medium priority
         "coverage_efficiency": coverage_efficiency,
+
+        # Move / IK reliability
+        "total_moves": total_moves,
+        "failed_moves": failed_moves,
+        "move_success_rate": move_success_rate,
+        "move_successes": ([bool(s) for s in move_successes]
+                           if move_successes is not None else None),
 
         # Low priority
         "stagnation_count": stagnation_count,
@@ -369,6 +396,13 @@ def save_and_print(results, prefix="results", experiment="D"):
 
     print(f"  {'Coverage AUC':<{lbl_w}} {results['coverage_auc']:>{col_w}.1f}")
     print(f"  {'Computation time (s)':<{lbl_w}} {results['total_time']:>{col_w}.1f}")
+    fm = results.get("failed_moves", None)
+    if fm is not None:
+        tm = results.get("total_moves", 0)
+        msr = results.get("move_success_rate", None)
+        rate = f"   ({msr:.1f}% success)" if msr is not None else ""
+        print(f"  {'Failed moves / IK failures (#) ↓':<{lbl_w}} "
+              f"{fm:>{col_w}d}   of {tm}{rate}")
     if results['hausdorff_distance'] is not None:
         print(f"  {'Hausdorff distance (m)':<{lbl_w}} {results['hausdorff_distance']:>{col_w}.6f}")
         print(f"  {'Chamfer distance (m)':<{lbl_w}} {results['chamfer_distance']:>{col_w}.6f}")

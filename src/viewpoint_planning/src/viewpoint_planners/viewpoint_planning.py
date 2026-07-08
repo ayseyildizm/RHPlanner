@@ -114,6 +114,7 @@ class ViewpointPlanning:
         self.tp_rh = np.array([0])
         self.fp_rh = np.array([0])
         self.fn_rh = np.array([0])
+        self.move_success_rh = []  # per-iteration arm-move outcome (False = failed/IK failure)
         self._diagnose_f1 = False
 
         # Set occluded baseline on the empty grid (before any planning) so
@@ -201,6 +202,7 @@ class ViewpointPlanning:
         self.losses_rh = np.append(self.losses_rh, loss)
 
         is_success = self.arm_control.move_arm_to_pose(numpy_to_pose(self.camera_pose))
+        self.move_success_rh.append(bool(is_success))
         time.sleep(1.0)  # ROS 2: time.sleep instead of rospy.sleep
 
         if is_success:

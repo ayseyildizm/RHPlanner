@@ -199,6 +199,7 @@ def run_single_trial(trial_idx, occ, run_dir, mesh_coords, mesh_tree,
     distances = [0.0]; times = [0.0]
     tp = [0]; fp = [0]; fn = [0]
     sigmas = [0.0]; occ_recalls = [0.0]
+    move_successes = []  # per-iteration arm-move outcome (False = failed/IK failure)
     recon_snapshots = []
     trail = [start_pose[:3].copy()]
 
@@ -207,6 +208,7 @@ def run_single_trial(trial_idx, occ, run_dir, mesh_coords, mesh_tree,
         t0 = time.time()
         viewpoint, loss = next_view(planner)
         ok = arm.move_arm_to_pose(numpy_to_pose(viewpoint))
+        move_successes.append(bool(ok))
         time.sleep(1.0)  # ROS 2: time.sleep instead of rospy.sleep
         if ok:
             depth, _, sem = perceiver.run()
@@ -256,6 +258,7 @@ def run_single_trial(trial_idx, occ, run_dir, mesh_coords, mesh_tree,
         params={"planner": METHOD_NAME, "trial": trial_idx,
                 "seed": fc_seed_for_trial(trial_idx)},
         target_voxels=planner.target_voxels, mesh_coordinates=mesh_coords,
+        move_successes=move_successes,
     )
     results["tp_series"] = tp; results["fp_series"] = fp; results["fn_series"] = fn
     results["sigma_series"] = sigmas

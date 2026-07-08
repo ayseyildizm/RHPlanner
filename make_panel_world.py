@@ -60,8 +60,18 @@ BASE_WORLD = os.path.join(SRC_WORLDS, "ur5e_world.sdf")
 OUT_NAME = "ur5e_world_panels.sdf"
 MANIFEST = os.path.join(HOME, "Desktop/RecedingHorizon/src/simulation_environment/panels_occluders.json")
 
-# Bunny mesh AABB in world coordinates (scale 1.2, pose 0.5 -0.30 1.0).
-BUNNY = {"x": (0.427, 0.614), "y": (-0.374, -0.229), "z": (0.830, 1.015)}
+# Target-object AABBs in world coordinates. Panels are built around the
+# selected target (--target); the launch file swaps the mesh at runtime
+# (TARGET=mug/tomato), so a panels world sized for the mug MUST be run with
+# the matching TARGET or the panels won't fit.
+#   bunny: bunny.dae scale 1.2 at pose 0.5 -0.30 0.85
+#   mug:   coffee_mug.dae scale 1.0 at pose 0.5 -0.30 0.85; local mesh bounds
+#          x[-0.035,0.082] y[-0.035,0.035] z[0,0.10] (handle juts out in +X)
+TARGETS = {
+    "bunny": {"x": (0.427, 0.614), "y": (-0.374, -0.229), "z": (0.830, 1.015)},
+    "mug":   {"x": (0.465, 0.582), "y": (-0.335, -0.265), "z": (0.850, 0.950)},
+}
+BUNNY = TARGETS["bunny"]  # default target AABB; overridden by --target in main()
 FACE_ORDER = ["front", "left", "right", "back", "top", "bottom"]
 def stage_faces(side: str):
     """Aperture-based stage progression: each stage closes exactly one more
@@ -175,6 +185,16 @@ def stage_panels(n: int, h: float, gap: float, t: float, side: str = "right"):
     return staged_walls(n, h, gap, t, side)
 
 
+def lshape_panels(gap, t, side="right"):
+    """L-shape occluder: two FULL-HEIGHT walls meeting at a corner (an 'L' in
+    top view). The FRONT panel (+Y, between the camera/robot and the target)
+    plus one SIDE wall (default right/+X). Same edge-to-edge construction as
+    the sealed box, so the two walls meet cleanly at the +Y/side corner; the
+    opposite side and the back stay open. Sized around the --target AABB."""
+    geo = box_faces(gap, t)
+    return [("front", *geo["front"]), (side, *geo[side])]
+
+
 def rotated_half_extents(w, t, h, yaw):
     """Axis-aligned half extents of a WxTxH box rotated by yaw about Z."""
     c, s = abs(math.cos(yaw)), abs(math.sin(yaw))
@@ -199,6 +219,16 @@ def main():
                       help="sealed box: first N faces (1..6) of a closed box")
     mode.add_argument("--az",
                       help="ring mode: comma-separated azimuths in degrees")
+    mode.add_argument("--lshape", action="store_true",
+                      help="L-shape: front panel + one side wall meeting at a "
+                           "corner (full height, sized to --target). Writes "
+                           "ur5e_world_panels8.sdf + stage-8 manifest; run with "
+                           "OCC=panels8 and the matching TARGET")
+    ap.add_argument("--target", choices=list(TARGETS), default="bunny",
+                    help="object the panels are sized around. mug is much "
+                         "smaller than bunny, so mug panels won't fit a bunny "
+                         "(and vice-versa) — run OCC=panels<N> with the TARGET "
+                         "that matches how the world was built")
     ap.add_argument("--side", choices=("left", "right"), default="right",
                     help="which side wall the stages start from. right (+X) = "
                          "easier (arm can barely reach +X viewpoints anyway); "
@@ -234,11 +264,26 @@ def main():
     ap.add_argument("--out", default=OUT_NAME, help="output world file name")
     args = ap.parse_args()
 
+    global BUNNY
+    BUNNY = TARGETS[args.target]  # size all panels around the chosen target
+
     t = args.thick
     panels = []  # (label, center(3), size(3), yaw, aabb_half(3))
 
     if args.stages_all:
         build_all_stages(args.wall_height, args.gap, t, args.side)
+        return
+    if args.lshape:
+        out_name = args.out if args.out != OUT_NAME else "ur5e_world_panels8.sdf"
+        manifest = stage_manifest_path(8)
+        for label, center, size in lshape_panels(args.gap, t, args.side):
+            panels.append((label, center, size, 0.0,
+                           (size[0] / 2, size[1] / 2, size[2] / 2)))
+        emit(panels, f"lshape-{args.target}", out_name, manifest)
+        print(f"\n[panels] L-shape ({args.target}): {len(panels)} panel(s), "
+              f"thickness {t:.3f} m -> {out_name}")
+        print(f"[panels] Launch with OCC=panels8 TARGET={args.target} "
+              "(restart the Gazebo stack).")
         return
     if args.stage is not None:
         valid = sorted(stage_faces(args.side)) + [BOTTOM_STAGE, SEALED_STAGE]

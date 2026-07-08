@@ -185,6 +185,7 @@ def run_single_trial(trial_idx, occ, run_dir):
         mesh_coordinates=mesh_coords,
         voxels_seen=vp.voxels_seen_rh.tolist(),
         voxels_total=vp.voxels_total_rh.tolist(),
+        move_successes=vp.move_success_rh,
     )
     results["sigma_series"] = vp.sigma_rh.tolist()
     results["occluded_recall_series"] = vp.occluded_recall_rh.tolist()
