@@ -1,0 +1,319 @@
+%=====================================================================
+% Chapter: Experimental Setup
+% Generated from the RecedingHorizon (RH-NBV) codebase configuration.
+% Requires: amsmath, booktabs, siunitx (recommended), graphicx.
+%=====================================================================
+\chapter{Experimental Setup}
+\label{ch:experimental-setup}
+
+This chapter describes the hardware and software platform, the simulated
+scene, the reconstruction and evaluation pipeline, the four viewpoint
+planners under comparison, the measures taken to ensure a fair comparison
+between them, and the family of occlusion scenarios used to probe planner
+behaviour under progressively harder visibility conditions.
+
+%---------------------------------------------------------------------
+\section{Platform and Robot Setup}
+\label{sec:platform}
+
+All experiments were carried out on a 6-DoF \textbf{Universal Robots UR5e}
+manipulator equipped with an \textbf{Intel RealSense} depth camera mounted
+in an \emph{eye-in-hand} configuration, so that the camera pose is fully
+determined by the arm's joint state. The system is implemented on
+\textbf{ROS\,2 Jazzy}. Motion planning and execution are handled by
+\textbf{MoveIt\,2}, and physics, rendering and depth sensing are simulated
+in \textbf{Gazebo (Gz~Sim)}. The same planner code runs against the
+physical robot; the simulator is used for the controlled comparative study
+reported here because it provides a repeatable scene and exact ground truth.
+
+The camera is modelled as a pinhole sensor with focal lengths
+$f_x\approx 685.5$\,px and $f_y\approx 685.6$\,px and principal point
+$(c_x,c_y)\approx(485.4,\,270.7)$\,px, producing registered colour and depth
+images that are downsampled to a working resolution of $600\times450$\,px
+for the reconstruction pipeline. The simulated depth sensor has a
+\textbf{near clipping plane of \SI{0.40}{\meter}}: any surface closer than
+this distance is removed from \emph{both} the depth and colour images. This
+hardware limit drives the minimum stand-off constraint introduced in
+Section~\ref{sec:fair}.
+
+%---------------------------------------------------------------------
+\section{Scene and Target Object}
+\label{sec:scene}
+
+The reconstruction target is the \textbf{Stanford Bunny} mesh, uniformly
+scaled by a factor of $1.2$ and placed on a supporting surface in front of
+the robot. In world coordinates its axis-aligned bounding box (AABB) spans
+\[
+  x\in[0.427,\,0.614],\quad
+  y\in[-0.374,\,-0.229],\quad
+  z\in[0.830,\,1.015]\ \text{(metres)},
+\]
+i.e.\ a footprint of roughly $18.7\times14.5$\,cm and a height of $18.5$\,cm.
+The camera coordinate frame is oriented so that the optical (depth) axis
+looks along the world $-Y$ direction toward the object.
+
+A single \textbf{region of interest (ROI)} is defined as a cube of
+half-width $\SI{0.095}{\meter}$ (\SI{\pm31}{voxels} at the working voxel
+resolution) centred on the target position $(0.50,\,-0.30,\,0.92)$. All
+coverage and reconstruction-quality metrics are computed strictly inside
+this ROI, so that occluding structures placed just outside it (see
+Section~\ref{sec:occlusion}) never inflate or pollute the scores.
+
+%---------------------------------------------------------------------
+\section{Scene Representation and Reconstruction Pipeline}
+\label{sec:representation}
+
+The scene is represented as a probabilistic \textbf{voxel grid}. The
+reconstruction volume measures $0.3\times0.6\times0.3$\,m
+($X\times Y\times Z$); it is deliberately elongated along $Y$ because that is
+the camera depth axis. The voxel edge length is $\SI{3}{\milli\meter}$, and
+the grid is centred on the ROI. At each planning iteration the segmented
+depth image of the target is ray-cast into the grid, updating per-voxel
+occupancy and yielding the observed voxel set used for scoring.
+
+\paragraph{Coverage.}
+ROI coverage is the fraction of ROI voxels that have been observed,
+expressed as a percentage. Every planner begins each trial from an
+identical, fully \emph{unobserved} ($0\%$) baseline.
+
+\paragraph{Reconstruction quality (F1).}
+Reconstruction fidelity is measured against the ground-truth mesh using
+precision, recall and their harmonic mean, the \textbf{F1-score}, following
+Burusa~et~al.~\cite{burusa2024}. A reconstructed occupied voxel is counted
+as a true positive if it lies within a matching threshold of
+$4\times$\,voxel size ($\SI{12}{\milli\meter}$) of the continuous mesh
+surface; this tolerance accounts for the finite thickness of the occupancy
+shell and is applied identically to all planners. When occluding panels are
+present, voxels falling inside the (dilated) occluder bounding boxes are
+excluded from the F1 computation for every planner alike, so that structure
+belonging to the occluders is never rewarded or penalised as object
+surface.
+
+%---------------------------------------------------------------------
+\section{Viewpoint Planners under Comparison}
+\label{sec:planners}
+
+Four planners are evaluated:
+
+\begin{itemize}
+  \item \textbf{RH-NBV} (\emph{proposed}) --- a receding-horizon,
+        sampling-based next-best-view planner (Section~\ref{sec:rh}).
+  \item \textbf{Gradient-NBV} --- the gradient-based information-driven
+        baseline of Burusa~et~al.~\cite{burusa2024}.
+  \item \textbf{PSO} --- a particle-swarm optimisation planner over the
+        camera workspace.
+  \item \textbf{Random} --- a naive baseline that samples admissible camera
+        poses uniformly at random, providing a lower bound on performance.
+\end{itemize}
+
+\subsection{The Proposed Receding-Horizon Planner (RH-NBV)}
+\label{sec:rh}
+
+At each iteration the RH-NBV planner samples $K$ candidate \emph{sequences}
+of $H$ future camera poses, scores each sequence by a discounted,
+motion-penalised information-gain objective, and---in the spirit of
+receding-horizon control---\emph{executes only the first pose} of the
+best-scoring sequence before replanning from the newly observed state.
+
+A candidate sequence
+$\boldsymbol{\xi}=(\xi_1,\dots,\xi_H)$ is scored by
+\begin{equation}
+  J(\boldsymbol{\xi})
+  \;=\;
+  \sum_{k=1}^{H}
+  \gamma^{\,k}
+  \Bigl[\,
+    f_{\mathrm{inc}}\!\left(M_{\mathrm{pred}},\,\xi_k\right)
+    \;-\;
+    \lambda\,C(\xi_{k-1},\xi_k)
+  \,\Bigr],
+  \label{eq:rh-objective}
+\end{equation}
+where $\gamma\in(0,1]$ is a discount factor that down-weights gains further
+into the horizon, $f_{\mathrm{inc}}$ is the \emph{incremental}
+information gain evaluated on a forward-predicted voxel grid
+$M_{\mathrm{pred}}$ (counting only voxels not already accounted for by
+earlier steps of the same sequence, which prevents the planner from being
+rewarded for near-stationary sequences), $C(\cdot,\cdot)$ is the Euclidean
+motion cost between consecutive poses, and $\lambda$ trades information gain
+against travel. Candidate poses are drawn by mixing tangential ``orbit''
+steps around the target (with probability equal to the bias ratio) with
+uniform samples inside the admissible camera box; every sampled pose is
+projected onto the admissible workspace and pushed out to the minimum
+stand-off before evaluation. A stagnation-escape mechanism forces an
+exploratory jump when coverage fails to improve for several consecutive
+iterations. The default hyper-parameters are listed in
+Table~\ref{tab:rh-params}.
+
+\begin{table}[t]
+  \centering
+  \caption{Default RH-NBV hyper-parameters (all overridable per experiment).}
+  \label{tab:rh-params}
+  \begin{tabular}{@{}llc@{}}
+    \toprule
+    Symbol & Meaning & Value \\
+    \midrule
+    $H$        & Planning horizon (poses per sequence)      & $3$ \\
+    $K$        & Candidate sequences per iteration          & $10$ \\
+    $\gamma$   & Discount factor                            & $0.85$ \\
+    $\lambda$  & Motion-cost weight                         & $2.0$ \\
+    ---        & Step size (orbit tangential step, m)       & $0.065$ \\
+    ---        & Bias ratio (orbit vs.\ uniform sampling)   & $0.70$ \\
+    ---        & Occlusion-aware IG bonus                    & $2.0$ \\
+    ---        & Stagnation patience (iterations)           & $4$ \\
+    ---        & Stagnation threshold (\% coverage gain)    & $1.5$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+%---------------------------------------------------------------------
+\section{Ensuring a Fair Comparison}
+\label{sec:fair}
+
+Because the study's central claim concerns the planning \emph{strategy}, all
+factors unrelated to strategy are held identical across the four planners
+through a single shared configuration. Specifically, every planner uses the
+same:
+
+\begin{enumerate}
+  \item \textbf{Reconstruction volume, ROI and F1 threshold} --- identical
+        grid size, voxel resolution, ROI cube and $\SI{12}{\milli\meter}$
+        matching tolerance, so the coverage denominator and quality metric
+        are common to all.
+  \item \textbf{Camera workspace} --- an axis-aligned box defined as the
+        start pose $\pm(0.35,\,0.10,\,0.22)$\,m, with the $-Y$ face extended
+        a further \SI{0.60}{\meter} toward and past the object. This
+        ``wrap'' is essential: without it the camera box stays entirely on
+        the $+Y$ (frontal) side of the object and no planner can reach the
+        side views needed to see around occluders. The proposed planner's
+        internal reach clamp is set \emph{equal} to this same box, so it can
+        never search a smaller volume than the baselines.
+  \item \textbf{Minimum stand-off} --- a hard lower bound of
+        \SI{0.45}{\meter} on the camera-to-target distance, enforced for
+        every planner. It sits just above the depth sensor's
+        \SI{0.40}{\meter} near clip so that the target never vanishes from
+        the depth and colour images.
+  \item \textbf{Per-trial start perturbation} --- to model start/ROI
+        uncertainty (as in~\cite{burusa2024}), trial $0$ starts from a
+        fixed, deterministic pose while each subsequent trial $t$ applies a
+        reproducible uniform perturbation of $\pm\SI{3}{\centi\meter}$ to
+        the start position, seeded by \texttt{BASE\_SEED}$+t$
+        (\texttt{BASE\_SEED}$=42$). Both the proposed planner and every
+        baseline receive the \emph{same} perturbed start on a given trial,
+        yielding a paired comparison with matched variance.
+\end{enumerate}
+
+Consequently the four planners search an identical physical camera space
+under identical constraints; only their search \emph{strategy} differs.
+
+%---------------------------------------------------------------------
+\section{Experimental Protocol and Metrics}
+\label{sec:protocol}
+
+Each run consists of a fixed number of NBV iterations (\emph{viewpoints}).
+Short runs use $5$ iterations and long convergence runs use $20$; the number
+of independent trials per configuration is configurable, with results
+averaged across trials. At every iteration the following quantities are
+logged, and reported both per iteration (as curves) and as run-level
+summaries:
+
+\begin{itemize}
+  \item \textbf{Primary:} ROI coverage (\%), F1-score, precision, recall.
+  \item \textbf{Efficiency:} cumulative trajectory distance (m),
+        ray-tracing calls (\#), and wall-clock computation time (s).
+  \item \textbf{Aggregate / convergence:} coverage AUC (area under the
+        coverage curve, rewarding \emph{how quickly} coverage is reached),
+        coverage efficiency (\%/m), and views-to-threshold
+        (iterations to reach F1$>0.7$ or coverage$>50\%$).
+  \item \textbf{Reconstruction error:} Hausdorff and Chamfer distances
+        between the reconstructed and ground-truth point sets.
+  \item \textbf{Diagnostic:} stagnation count and first-detection iteration.
+\end{itemize}
+
+%---------------------------------------------------------------------
+\section{Occlusion Scenarios}
+\label{sec:occlusion}
+
+To evaluate the planners under controlled and increasingly difficult
+visibility conditions, the target is surrounded by rigid occluding
+structures. Two families of scenarios are used.
+
+\subsection{Legacy occluders}
+A set of hand-authored worlds provides qualitatively distinct occlusion
+types, selected at launch time via the \texttt{OCC} label:
+
+\begin{description}
+  \item[\texttt{none}] No occluder --- the unobstructed control condition.
+  \item[\texttt{frontal}] A single panel directly between the object and the
+        frontal ($+Y$) start region, forcing the planner to move to the
+        sides.
+  \item[\texttt{half\_box}] A partial box enclosing several faces of the
+        object.
+  \item[\texttt{tunnel}] Two opposing side walls forming a tunnel, leaving
+        the front, back and top open.
+  \item[\texttt{well}] A tight enclosure open only at the top, so the object
+        is reachable mainly from above.
+\end{description}
+
+\subsection{Staged panel ladder}
+\label{sec:panels}
+
+The principal occlusion study uses a systematically generated
+\textbf{staged panel ladder}, in which each stage closes exactly one
+additional viewing ``aperture'' relative to the previous one, so that
+difficulty rises \emph{monotonically} for every planner. The panels are
+generated procedurally around the object's bounding box. All walls share an
+identical thickness of $\SI{0.02}{\meter}$ and an identical height of
+$\approx\SI{0.144}{\meter}$; each wall is placed with a $\SI{0.03}{\meter}$
+clearance (gap) outside the object AABB, which keeps every wall
+\emph{outside} the $\pm\SI{0.095}{\meter}$ evaluation ROI so that panel
+voxels can never count toward object coverage. The walls are
+bottom-anchored so that only the top $\approx\SI{5}{\centi\meter}$ of the
+object (the bunny's head and ears) remains visible over the wall tops, and
+wall widths span each face edge-to-edge so that adjacent walls \emph{meet at
+the corners} with no gaps. The six stages are summarised in
+Table~\ref{tab:panel-stages}.
+
+\begin{table}[t]
+  \centering
+  \caption{The staged panel occlusion ladder. Each stage adds exactly one
+    occluding element (bold), monotonically reducing visibility. Panels are
+    \SI{0.02}{\meter} thick, $\approx\SI{0.144}{\meter}$ tall, offset
+    \SI{0.03}{\meter} from the object AABB.}
+  \label{tab:panel-stages}
+  \begin{tabular}{@{}clp{7.2cm}@{}}
+    \toprule
+    Stage & Label & Occluding structure \\
+    \midrule
+    1 & \texttt{panels1} & One \textbf{side} wall only (front, back, other
+        side and top all open). \\
+    2 & \texttt{panels2} & \textbf{Tunnel}: the opposite side wall is added
+        --- both sides closed, front/back/top open. \\
+    3 & \texttt{panels3} & \textbf{U-shape}: the \textbf{front} wall is added
+        --- the demanding frontal aperture closes. \\
+    4 & \texttt{panels4} & \textbf{Four walls} (both sides, front, back);
+        the top aperture remains open. \\
+    5 & \texttt{panels5} & Four walls \textbf{+ bottom lid} flush under the
+        walls; the top stays open. \\
+    6 & \texttt{panels6} & \textbf{Sealed}: stage~5 plus a \textbf{top lid}
+        resting on the wall tops (fully enclosed). \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The side from which the ladder starts is a difficulty knob. Starting from
+the $+X$ (``right'') side is the \emph{easier} series, because the arm can
+barely reach $+X$ viewpoints regardless; starting from the $-X$ (``left'')
+side is \emph{harder}, because it blocks the side that is actually
+arm-reachable. As a concrete example, at stage~4 the four generated walls
+are centred at approximately $x=0.39$ and $x=0.65$ (side walls, spanning
+$y$) and $y=-0.19$ and $y=-0.41$ (front and back walls, spanning $x$), all
+at height $z\approx0.87$.
+
+\paragraph{Consistent occluder masking.}
+For every stage, the exact axis-aligned bounding boxes of the generated
+panels (dilated by one voxel, \SI{3}{\milli\meter}) are written to a
+per-stage manifest. All planners load this manifest and exclude the
+corresponding voxels from F1 scoring, so the same regions are masked out for
+every planner --- an essential condition for a fair comparison under
+occlusion.

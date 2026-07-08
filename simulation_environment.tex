@@ -1,0 +1,48 @@
+\section{Simulation Environment}
+
+The scene is represented by a probabilistic semantic voxel grid $\mathcal{M}$
+of resolution $\rho = \SI{3}{\milli\metre}$ (\texttt{VOXEL\_SIZE}), spanning a
+volume of $0.3 \times 0.6 \times 0.3$\,m (\texttt{GRID\_SIZE}); the grid is
+elongated along $Y$ because that is the camera depth axis. Each voxel
+$\mathbf{v}$ stores an occupancy probability $p_o(\mathbf{v})$ and a
+target-class semantic confidence $p_s(\mathbf{v})$, updated via probabilistic
+sensor fusion following \citet{burusa2024}. The occupancy probability is
+initialised to $0.5$ (unknown) and the semantic confidence to $\approx 0$
+(background), after which each observation updates them in log-odds space. A
+cubic Region of Interest (ROI) $\mathcal{R}\subset\mathbb{Z}^3$ is centred on
+a fixed target point $\mathbf{t} = (0.50,\ {-0.30},\ 0.92)$\,m
+(\texttt{get\_target\_position}), with half-edge \SI{0.095}{\metre}
+($\approx 31$ voxels per axis; \texttt{ROI\_HALF}).\\
+
+Coverage is measured as the percentage of ROI voxels observed from at least
+one viewpoint, and the F1 matching threshold is set to $4 \times \rho = 12$\,mm
+(\texttt{F1\_THRESH\_SCALE}), chosen to account for the systematic offset
+between occupancy-thresholded voxel centres and the continuous mesh surface.\\
+
+To ensure a fair and reproducible comparison across all evaluated planners --
+RH-NBV, GradientNBV, PSO, and Random -- all parameters that affect performance
+are defined in a single configuration module
+(\texttt{fair\_comparison\_config.py}) and imported by every planner. The
+camera moves within a fixed axis-aligned box around its starting position,
+identical for every planner: half-widths of \SI{0.35}{\metre} in $X$,
+\SI{0.10}{\metre} in $Y$ and \SI{0.22}{\metre} in $Z$
+(\texttt{CAMERA\_BOUNDS\_HALFWIDTHS}). In addition, the $-Y$ face of this box
+is extended a further \SI{0.60}{\metre} toward and past the target
+(\texttt{CAM\_WRAP\_Y}) so that true side views become searchable; without
+this extension the workspace stays entirely on the frontal ($+Y$) side of the
+object and no planner can look around lateral occluders. The starting position
+is placed \SI{0.60}{\metre} from the target along the $+Y$ axis
+(\texttt{predefine\_start\_pose}), and a minimum camera-to-target stand-off of
+\SI{0.45}{\metre} (\texttt{MIN\_STANDOFF}) is enforced by every planner; this
+sits just above the depth sensor's \SI{0.40}{\metre} near clip, below which
+the target vanishes from both the depth and colour images. For trials beyond
+the first, the start position is randomly shifted by up to $\pm\SI{0.03}{\metre}$
+(\texttt{START\_JITTER}) using a fixed seed
+(\texttt{BASE\_SEED} $= 42$, seed $= 42 + \text{trial index}$); trial $0$ is
+deterministic. Both the proposed planner and every baseline therefore start
+from the exact same (perturbed) pose in a given trial.\\
+
+All planners operate on the same voxel representation and share an identical
+perception and reconstruction pipeline, so any difference in performance is
+attributable solely to the planning strategy rather than to the scene
+representation.
