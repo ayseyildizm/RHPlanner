@@ -58,10 +58,10 @@ class ViewpointPlanning:
             "discount": 0.85,
             "r_min": 0.15,
             "r_max": 0.45,
-            "occlusion_bonus": 2.0,
+            "occlusion_bonus": 0.0,
             "stagnation_patience": 4,
             "stagnation_threshold": 1.5,
-            "use_spherical_bounds": True,
+            "use_spherical_bounds": False,
         }
         if rh_params:
             default_rh.update(rh_params)
@@ -166,7 +166,7 @@ class ViewpointPlanning:
         self.intrinsics = np.array(camera_info.k).reshape(3, 3)  # ROS 2: lowercase k
 
     # -------------------------------------------------------------
-    # Occlusion scenarios
+    # Occlusion scenarios - not used anymore (was for the previous setup with ABB robot)
     # -------------------------------------------------------------
     def spawn_no_occlusion(self):
         pass
@@ -361,7 +361,7 @@ class ViewpointPlanning:
             "fn": self.fn_rh,
         }
 
-    # ---------- Mesh loading ----------
+    # ----------------------------- Mesh loading ----------------------------
     def get_mesh_coordinates(self):
         meshes = "/home/ayse/Desktop/RecedingHorizon/src/simulation_environment/meshes"
         ns = {"ns": "http://www.collada.org/2005/11/COLLADASchema"}
@@ -408,12 +408,6 @@ class ViewpointPlanning:
             translation = np.array([0.5, -0.50, 0.9])
             transformed_coords = vertices_converted * 0.4 + translation
         else:
-            # IDENTICAL to test_gradient_node.get_mesh_coordinates: both
-            # planners MUST score against the same GT mesh. The old transform
-            # here ((x,z,y) swap, -1.2 x-scale, translation y=-0.25) was stale:
-            # it left the GT mesh 5 cm in front of and 180°-rotated from the
-            # Gazebo bunny, so RH's (correct) reconstructions scored as FPs
-            # while GradientNBV (using the transform below) scored cleanly.
             file_path = f"{meshes}/bunny.dae"
             root = ET.parse(file_path).getroot()
             arr = root.find(".//ns:float_array[@id='bun_zipper-mesh-positions-array']", ns)

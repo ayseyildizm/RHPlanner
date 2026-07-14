@@ -58,10 +58,8 @@ $ROS2_WS/install/abb_interfaces/lib/python3.12/site-packages
 export LD_LIBRARY_PATH=/opt/ros/jazzy/lib:$ROS2_WS/install/abb_interfaces/lib:$ROS2_WS/install/abb_control/lib
 export PYTHONUNBUFFERED=1
 
-# ============================================================
-# TEK KRİTİK FARK: gerçek robotta simülasyon saati YOK.
 export USE_SIM_TIME=false
-# ============================================================
+
 
 # GERÇEK NESNE = COFFEE MUG (117×70×100 mm). Planner ROI'yi mug MERKEZİNE nişanlar.
 # Mug masa üstü 0.85 m, tepe 0.95 → merkez 0.90 (bunny 0.92 değil; mug daha kısa).

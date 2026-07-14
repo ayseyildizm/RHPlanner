@@ -1,0 +1,109 @@
+% Tree (tomato plant) experiment — experimental setup.
+% Written to match the style of simulation_environment.tex; demote \section
+% to \subsection if it lives under a larger Experiments chapter.
+
+\section{Plant Experiment: Targeted Perception under Natural Occlusion}
+\label{sec:tree-setup}
+
+While the panel experiments manufacture occlusion externally, plants occlude
+themselves: leaves and branches naturally hide the fruit. To evaluate the
+planners under such \emph{natural} occlusion, the target object is replaced
+by a single 3D tomato plant mesh (\texttt{tomato6.dae}) composed of ten named
+submeshes -- one branch structure, two leaf groups, three blossoms, and four
+fruits. The plant is placed at $(0.50,\ {-0.50},\ 0.90)$\,m at a uniform scale
+of $0.4$, giving a canopy that spans \SIrange{0.90}{1.49}{\metre} in height
+($\approx\SI{0.59}{\metre}$ tall) with a lateral radius of at most
+\SI{0.17}{\metre}. The individual fruits measure between \SI{20}{\milli\metre}
+and \SI{74}{\milli\metre} across. No artificial occluders are present; the
+occluder manifest is empty and all occlusion arises from the plant's own
+foliage.\\
+
+\paragraph{Attention levels.} Following the region-of-interest levels of
+\citet{burusa2024} (whole plant, main stem, leaf nodes), three perception
+tasks of increasing selectivity are defined. Each level determines (i) which
+submeshes constitute the reconstruction target and hence the ground truth,
+(ii) the ROI cube, and (iii) the reconstruction volume, since the whole plant
+does not fit the default grid. Within a level, both planners share identical
+settings:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lllll}
+\toprule
+Level & Target submeshes & ROI half-edge & Grid (m) & Voxel $\rho$ \\
+\midrule
+whole plant & all ten          & \SI{0.31}{\metre}  & $0.38 \times 0.6 \times 0.62$ & \SI{5}{\milli\metre} \\
+blossoms    & 3 blossoms       & \SI{0.22}{\metre}  & $0.30 \times 0.6 \times 0.46$ & \SI{4}{\milli\metre} \\
+fruits      & 4 fruits         & \SI{0.105}{\metre} & $0.30 \times 0.6 \times 0.30$ & \SI{3}{\milli\metre} \\
+\bottomrule
+\end{tabular}
+\caption{Attention levels of the plant experiment. The ROI is centred on the
+target-class centroid: $(0.50, -0.50, 1.20)$\,m for the whole plant,
+$(0.50, -0.50, 1.30)$\,m for the blossoms, and $(0.50, -0.50, 1.16)$\,m for
+the fruits.}
+\label{tab:tree-levels}
+\end{table}
+
+The perception pipeline is unchanged: the target-class submeshes are rendered
+in red and detected by the HSV-based semantic segmenter, while non-target
+parts keep natural colours (brown branch, green leaves) and are mapped as
+occupied but non-target space.\\
+
+\paragraph{Plant orientations.} With a single plant model, scene variation is
+obtained by rotating the plant about its own vertical axis, in the spirit of
+the twelve orientations per plant used by \citet{burusa2024}. Four yaw
+angles $\psi \in \{0^\circ, 90^\circ, 180^\circ, 270^\circ\}$ are evaluated;
+each orientation hides a different subset of fruits behind different leaves
+and therefore constitutes a distinct natural-occlusion pattern. The
+ground-truth point set is rotated identically to the spawned model
+(\texttt{TREE\_YAW}). Because the fruit and blossom centroids lie on the
+rotation axis, the target point, ROI, camera start pose, and workspace remain
+identical across orientations -- only the scene rotates. Results are reported
+as mean $\pm$ standard deviation over the four orientations.\\
+
+\paragraph{F1 matching threshold.} The panel experiments use a matching
+threshold of $4\rho = \SI{12}{\milli\metre}$. On fruit-scale targets this
+saturates the metric: a \SI{12}{\milli\metre} tolerance around the sparse
+first-view reconstruction already ``recalls'' nearly every ground-truth point
+of a \SIrange{20}{74}{\milli\metre} fruit ($F_1 \approx 1$ from the first
+viewpoint). A diagnostic run measured the actual distance between
+occupancy-thresholded voxel centres and the mesh surface as
+\SI{1.5}{\milli\metre} median and \SI{4.8}{\milli\metre} maximum -- far below
+the bunny-calibrated offset. The threshold is therefore tightened to
+$2\rho$ per level (\SI{6}{\milli\metre}, \SI{8}{\milli\metre},
+\SI{10}{\milli\metre} for the fruit, blossom, and whole-plant levels
+respectively; \texttt{F1\_THRESH}), which leaves precision unaffected (the
+measured maximum surface offset lies below it) while restoring the
+discriminative power of recall.\\
+
+\paragraph{Reachability constraint.} The viewpoint workspace of the panel
+experiments is retained, but the blossom and whole-plant ROIs sit
+\SIrange{0.14}{0.30}{\metre} higher than the panel target, which places part
+of the sampling volume beyond the manipulator's reachable workspace: an
+inverse-kinematics reach map of the camera-in-hand configuration yielded no
+feasible look-at pose beyond $\approx\SI{1.0}{\metre}$ radial distance from
+the UR5e base, while every commanded pose that failed motion planning in
+preliminary runs lay at \SI{1.10}{\metre} or farther. A local planner is
+insensitive to this: GradientNBV's gradient steps keep the camera near
+previously executed -- hence feasible -- poses. A globally sampling planner,
+by contrast, is systematically \emph{attracted} to the infeasible region:
+viewpoints that can never be executed are never observed, so the expected
+information gain of the volume they cover remains permanently high, and each
+failed motion consumes one viewpoint of the budget while the camera stays in
+place. RH-NBV therefore projects every candidate whose distance from the
+manipulator base exceeds $R = \SI{1.0}{\metre}$ radially back onto that
+reachable shell before evaluation. The constraint encodes the physical reach
+of the platform rather than a tuning choice; the information-gain objective
+and all remaining parameters are untouched, and GradientNBV, whose poses
+remain within reach, is unaffected.\\
+
+\paragraph{Protocol.} Each (level, orientation) scenario is executed on a
+freshly restarted simulation stack. Both planners observe the scene for a
+budget of $20$ viewpoints from the same initial pose, one trial per
+orientation. The RH-NBV hyper-parameters are kept exactly as in the panel
+experiments ($K = 10$ candidates, horizon $H = 3$, $\gamma = 0.85$,
+$\lambda = 2.0$); no per-object retuning is performed, so any performance
+difference reflects the planner's ability to generalise to a new object
+class. Reported metrics are ROI coverage, precision, recall and $F_1$ against
+the target-class ground truth, the number of views required to reach fixed
+coverage thresholds, and the total end-effector trajectory length.

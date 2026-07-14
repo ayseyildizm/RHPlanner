@@ -15,6 +15,8 @@ except ModuleNotFoundError:
 
 
 class RHPlanner:
+    # Holds all the state for one planning run: 
+    # the voxel grid belief, the RH hyperparameters (K, H, gamma, lambda...), the camera workspace bounds and the ground truth mesh we score reconstruction against
     def __init__(
         self,
         start_pose: np.array,
@@ -32,40 +34,42 @@ class RHPlanner:
         num_pts_per_ray: int = 128,
         num_features: int = 4,
         num_samples: int = 1,
+        # NOTE: these grid_center / target_params defaults ([0.5,-0.25,1.1]) are from an earlier setup. Every driver passes the real target from fair_comparison_config.get_target_position() (bunny 0.50,-0.30,0.92), 
+        # so the defaults here are never actually used in the experiments.
         target_params: np.array = np.array([0.5, -0.25, 1.1]),
         # RH parameters
-        horizon: int = 3,
-        num_candidates: int = 10,
-        lambda_cost: float = 2.0,
-        step_size: float = 0.065,
-        bias_ratio: float = 0.7,
-        discount: float = 0.85,
+        horizon: int = 3,   # H: how many steps ahead each candidate sequence looks
+        num_candidates: int = 10,    # K: how many candidate sequences we sample per iteration
+        lambda_cost: float = 2.0,    # weight on motion cost, higher = punish long moves more
+        step_size: float = 0.065,    # roughly how far one tangential orbit step moves
+        bias_ratio: float = 0.7,    # %70 of steps are orbit steps, %30 are random
+        discount: float = 0.85,     #gamma: future steps in the horizon count for less than the first
         # Improvement parameters
         r_min: float = 0.15,          # min orbit radius around target
         r_max: float = 0.45,          # max orbit radius around target
-        occlusion_bonus: float = 2.0, # weight for occlusion-aware IG bonus.
-                                      # DEFAULT 0.0 = OFF: GradientNBV's utility
-                                      # has no such term, so it is disabled for
-                                      # the fair baseline comparison. Set >0
-                                      # (e.g. 2.0) to re-enable as an ablation.
+        occlusion_bonus: float = 0.0, # weight for occlusion-aware IG bonus.
+        # DEFAULT 0.0 = OFF: GradientNBV's utility has no such term, so it is disabled for the fair baseline comparison.
+                                      
         stagnation_patience: int = 4,   # iters without coverage gain → then escape
         stagnation_threshold: float = 1.5,  # min % gain to count as non-stagnant
         rng_seed: int = 42,
         robot_reach_bounds: np.array = None,
-        # DEFAULT False = OFF: the spherical orbital shell is an RH-specific
-        # constraint absent from Burusa's GradientNBV. It is disabled by default
-        # so both planners search the SAME box-constrained camera space. Set
-        # True to re-enable the shell as an ablation (reproduces older results).
+        # DEFAULT False = OFF: the spherical orbital shell is an RH-specific constraint absent from Burusa's GradientNBV. 
+        # It is disabled by default so both planners search the SAME box-constrained camera space.
+        
+        # Set True to re-enable the shell as an ablation 
         use_spherical_bounds: bool = False,
     ) -> None:
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
+        
+        #the fixed 3D point the camera always looks at the centre of the ROI on the object
         self.target_params = torch.tensor(
             target_params, dtype=torch.float32, device=self.device
         )
 
 
-        # ---------SPHERICAL BOUNDS - centred on target-----------
+        # ------------SPHERICAL BOUNDS - centred on target----------------
+        # r_min and r_max define a shell (a hollow sphere) around the target that the camera is allowed to orbit inside. This is an RH-only option and is OFF by default, because GradientNBV has no such shell and we want a fair comparison.
         self.r_min = r_min
         self.r_max = r_max
         self.use_spherical_bounds = use_spherical_bounds
@@ -76,12 +80,8 @@ class RHPlanner:
         else:
             self.robot_reach_bounds = None
         # Axis-aligned camera bounds.
-        # MATCHED EXACTLY to GradientNBVPlanner's camera box so both planners
-        # search the same physical camera workspace (fair comparison). Both use
-        # fair_comparison_config.camera_bounds_for_start(), which wraps the box
-        # around the object in -Y (CAM_WRAP_Y) so side views are searchable.
-        # The shell (if re-enabled via use_spherical_bounds) still uses
-        # r_min/r_max independently.
+        # MATCHED to GradientNBVPlanner's camera box so both planners search the same physical camera workspace (fair comparison). 
+        # Both use fair_comparison_config.camera_bounds_for_start(), which wraps the box around the object in -Y (CAM_WRAP_Y) so side views are searchable.
         start_np = np.asarray(start_pose[:3], dtype=np.float32)
         from viewpoint_planners.fair_comparison_config import (
             camera_bounds_for_start,
@@ -126,12 +126,15 @@ class RHPlanner:
         self.discount       = discount
         self.occlusion_bonus = occlusion_bonus
 
-        # Current camera position: updated after each real step
+        # Current camera position: updated after each step
+        # new candidate sequences are always generated starting from here.
         self.current_pos = torch.tensor(
             start_pose[:3], dtype=torch.float32, device=self.device
         )
 
-
+        
+        # Stagnation check: if coverage hasn't improved for `patience` iterations, the planner is probably stuck. 
+        # In that case, jump to a far-away orbit position to escape the local optimum.
         self.stagnation_patience   = stagnation_patience
         self.stagnation_threshold  = stagnation_threshold
         self._stagnation_counter   = 0
@@ -140,18 +143,17 @@ class RHPlanner:
         # Ray-tracing counter (cumulative, never reset)
         self.ray_trace_count = 0
 
-        # Reproducibility
         np.random.seed(rng_seed)
         torch.manual_seed(rng_seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(rng_seed)
 
-        self.target_voxels        = np.array(0)
-        self.all_target_voxels    = np.zeros((0, 3))  # full recon for plotting
-        self.candidate_history    = []
-        self.occluded_mesh_points = None
+        self.target_voxels        = np.array(0)  # target-class voxels inside the ROI
+        self.all_target_voxels    = np.zeros((0, 3))  # full recon before roi clip , for plotting
+        self.candidate_history    = []      #  saved candidate sequences per iter
+        self.occluded_mesh_points = None    #  mesh points hidden at view 0, for occluded recall
 
-        # Explicit TP/FP/FN from the most recent F1 computation (Burusa-style).
+        # Explicit TP/FP/FN 
         self.last_tp = 0
         self.last_fp = 0
         self.last_fn = 0
@@ -164,8 +166,8 @@ class RHPlanner:
         )
 
 
-    # SPHERICAL BOUNDS — camera orbits target on a sphere (r_min, r_max).
-    # No more corner-trapping. Positions outside the shell are re-projected back onto the sphere surface.
+    # Simple box check: is this position inside the robot reach bounds?
+    # Positions outside the box are discarded later, because the arm cannot reach them.
     def _within_reach(self, pos: torch.Tensor) -> bool:
         if self.robot_reach_bounds is None:
             return True
@@ -173,62 +175,62 @@ class RHPlanner:
         hi = self.robot_reach_bounds[1]
         return bool(torch.all(pos >= lo) and torch.all(pos <= hi))
 
-    # Kamerayı Küre Üzerinde Tutuyor
-    # Yeni hesaplanan pozisyon küre dışına çıkarsa geri iter. 
-    # Hedeften olan yön korunur, sadece mesafe düzeltilir. 
-    # Bircher'da kamera herhangi bir yere gidebiliyordu ve "köşe tuzağına" düşüyordu, bu fonksiyon onu engelliyor.
+    # This keeps the camera on the orbital shell.
+    # If the new position falls outside the shell we push it back. 
+    # The direction from the target is kept, only the distance gets corrected. 
+    # In Bircher's frontier method the camera could go anywhere and got "corner trapped", this projection is what stops that from happening.
     def _project_to_shell(self, pos: torch.Tensor) -> torch.Tensor:
-        """Project pos onto the orbital shell [r_min, r_max] around target.
-
-        If use_spherical_bounds is False, the shell is disabled and pos is
-        returned unchanged (Burusa-style: only the reach box constrains pos).
-        """
         if not self.use_spherical_bounds:
-            return pos
-        vec  = pos - self.target_params  # yon vektoru = kamera - hedef 
-        dist = torch.norm(vec)  # suanki uzaklik
+            return pos  # shell disabled , return the position untouched
+        vec  = pos - self.target_params  # direction vektor = camera - target 
+        dist = torch.norm(vec)  # current distance to the target
         if dist < 1e-6:
+            # camera is basically on the target, pick an arbitrary direction so we do not divide by zero below.
             vec  = torch.tensor([0.0, 1.0, 0.0], device=self.device)
             dist = torch.tensor(1.0, device=self.device)
-        r = torch.clamp(dist, self.r_min, self.r_max)
-        return self.target_params + vec / dist * r  # ayni yonde, dogru uzaklikta
+        r = torch.clamp(dist, self.r_min, self.r_max) # squueze distance into 
+        return self.target_params + vec / dist * r  # same direction, corrected distance 
 
     def _push_to_min_standoff(self, pos: torch.Tensor) -> torch.Tensor:
-        """Push pos radially away from the target if it is closer than
-        min_standoff. Needed since the wrapped camera box (CAM_WRAP_Y) contains
+        """Push pos radially away from the target if it is closer than min_standoff. 
+        Needed since the wrapped camera box (CAM_WRAP_Y) contains
         the object itself: without this, samples could land inside the bunny
         or below the D455 minimum depth range."""
         vec = pos - self.target_params
         dist = torch.norm(vec)
         if dist >= self.min_standoff:
-            return pos
+            return pos  # aalready far enough away
         if dist < 1e-6:
             vec = torch.tensor([0.0, 1.0, 0.0], device=self.device)
             dist = torch.tensor(1.0, device=self.device)
         return self.target_params + vec / dist * self.min_standoff
 
-    # ------------------------------------------------------------------
+    # -------------------------------------------------------------
     # Candidate generation
-    # ------------------------------------------------------------------
+    # -------------------------------------------------------------
     def generate_candidate_sequence(self, start_pos: torch.Tensor) -> torch.Tensor:
         """
         Generate H-step sequence on the orbital sphere around target.
         bias_ratio fraction: tangential orbit steps.
         rest: random spherical jumps.
         """
+        # a sequence is H positions, one per horizon step. we build them one after another, 
+        # each new step starting from the previous one.
         sequence = torch.zeros(
             (self.horizon, 3), dtype=torch.float32, device=self.device
         )
         prev_pos = start_pos.clone()
 
-        # H adim uret
+        # generate H steps
         for k in range(self.horizon):
             if torch.rand(1).item() < self.bias_ratio:
                 # Tangential step on sphere surface
                 to_target  = self.target_params - prev_pos
                 dist       = torch.norm(to_target)
-                radial_dir = to_target / (dist + 1e-6)
+                radial_dir = to_target / (dist + 1e-6)  # unit vector pointing at the target
 
+                # Pick a random direction, then subtract out its radial component.
+                # What remains is purely tangential
                 rand_dir = torch.randn(3, device=self.device)
                 rand_dir = rand_dir - (rand_dir @ radial_dir) * radial_dir
                 rand_norm = torch.norm(rand_dir)
@@ -241,6 +243,8 @@ class RHPlanner:
                 step    = self.step_size * (0.3 + 0.7 * torch.rand(1, device=self.device).item())
                 new_pos = prev_pos + tangent * step
             else:
+                # the other (1 - bias_ratio) of the time, take a big random jump so
+                # the planner can explore far away views instead of only crawling.
                 if self.use_spherical_bounds:
                     # Random spherical sample on the orbital shell.
                     phi     = torch.rand(1).item() * 2 * np.pi
@@ -261,12 +265,6 @@ class RHPlanner:
                     new_pos = lo + torch.rand(3, device=self.device) * (hi - lo)
 
             new_pos = self._project_to_shell(new_pos)
-            # Standoff push BEFORE the reach clamp: the clamp must win, or the
-            # push can move candidates back outside the (runtime-tightened)
-            # reach bounds and the arm gets re-commanded to unreachable poses.
-            # A clamped pose can end up slightly inside the standoff sphere;
-            # that is benign since sub-near-clip pixels are neutralized in the
-            # ray sampler.
             new_pos = self._push_to_min_standoff(new_pos)
             if not self._within_reach(new_pos) and self.robot_reach_bounds is not None:
                 new_pos = torch.max(
@@ -281,6 +279,7 @@ class RHPlanner:
 
   
     # Occlusion-aware IG
+    # This is the utility function: given the current belief grid and a camera position, how much do we expect to learn by looking from there?
     @torch.no_grad()
     def compute_gain_on_grid(
         self, voxel_grid_data: torch.Tensor, camera_pos: torch.Tensor
@@ -295,28 +294,29 @@ class RHPlanner:
         pure overhead. Disabling it leaves every numeric result identical while
         cutting memory and runtime (important on the limited-GPU laptop).
         """
+        # this is a real gain evaluation so it counts toward the ray-tracing cost.
         self.ray_trace_count += 1
         quat       = look_at_rotation(camera_pos, self.target_params)
         transforms = transform_from_rotation_translation(
             quat[None, :], camera_pos[None, :]
         )
 
-        # t_vals is read-only here, so the previous .clone() was unnecessary.
         t_vals = self.voxel_grid.t_vals
         ray_origins, ray_directions, _ = (
             self.voxel_grid.ray_sampler.ray_origins_directions(transforms=transforms)
         )
+                
+        # sample num_pts_per_ray 3D points along every ray (origin + direction * t).
         ray_points = (
             ray_directions[:, :, None, :] * t_vals[None, :, None]
             + ray_origins[:, :, None, :]
         ).view(-1, 3)
 
+        # normalize into [-1, 1] grid coords so grid_sample can look up each point
         ray_points_nor = self.voxel_grid.normalize_3d_coordinate(ray_points)
-        del ray_points  # free ~395 MB before grid_sample to avoid OOM
+        del ray_points  # free to avoid OOM
         ray_points_nor = ray_points_nor.view(1, -1, 1, 1, 3)
-        # Use (1,2,Dx,Dy,Dz) grid so grid_sample handles both channels in one
-        # batch-1 call — eliminates the .repeat(2,...) that duplicated the
-        # 395 MB query tensor and caused OOM on the 16 GB laptop.
+        
         grid          = voxel_grid_data[None, ..., 1:3].permute(0, 4, 1, 2, 3)
         occ_sem_confs = F.grid_sample(grid, ray_points_nor, align_corners=True)
         occ_sem_confs = occ_sem_confs.view(2, -1, self.voxel_grid.num_pts_per_ray)
@@ -325,7 +325,9 @@ class RHPlanner:
         )
 
         opacities      = torch.sigmoid(1e7 * (occ_sem_confs[0, ...] - 0.51))
+        # transmittance: probability the ray reaches each voxel without being blocked by something in front of it. voxels hidden behind solid stuff get low weight.
         transmittance  = self.voxel_grid.shifted_cumprod(1.0 - opacities)
+        # entropy: how uncertain the semantic label of each voxel is
         entropy        = self.voxel_grid.entropy(occ_sem_confs[1, ...])
         ray_gains      = transmittance * entropy
         base_gain      = torch.log(torch.mean(ray_gains) + self.voxel_grid.eps)
@@ -333,7 +335,6 @@ class RHPlanner:
        
         # Occlusion bonus: high occupancy + high semantic uncertainty
         # = likely an occluded target voxel becoming visible
-        # ------------------------------------------------------------------
         occ_vals  = occ_sem_confs[0, ...]   # occupancy along rays
         sem_vals  = occ_sem_confs[1, ...]   # semantic uncertainty along rays
         occ_high  = (occ_vals > 0.6)
@@ -342,16 +343,16 @@ class RHPlanner:
 
         return base_gain.item() + occ_bonus.item()
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
     # PredictUpdate — belief forward simulation (no ray_trace_count)
-    # ------------------------------------------------------------------
+    # ----------------------------------------------------------------------------
     @torch.no_grad()
     def predict_update(
         self, voxel_grid_data: torch.Tensor, camera_pos: torch.Tensor
     ) -> torch.Tensor:
         """
-        Simulate hypothetical measurement. Does NOT count as a ray-tracing
-        call (Burusa metric 3 counts only real gain evaluations).
+        Simulate hypothetical measurement. Doesn't count as a ray-tracing
+        call (Burusa metric counts only real gain evaluations).
 
         Wrapped in torch.no_grad(): the predicted grid is only consumed by
         compute_gain_on_grid (also no-grad), never differentiated, so the
@@ -405,19 +406,26 @@ class RHPlanner:
         occ      = updated_grid[gx, gy, gz, 1]
         occ_mask = (occ > 0.45) & (occ < 0.55)
         if occ_mask.any():
+            occ_sel = occ[occ_mask]
+            occ_target = torch.where(
+                occ_sel >= 0.5,
+                torch.full_like(occ_sel, 0.65),
+                torch.full_like(occ_sel, 0.35),
+            )
             updated_grid[gx[occ_mask], gy[occ_mask], gz[occ_mask], 1] = (
-                0.6 * occ[occ_mask] + 0.4 * 0.35
+                0.6 * occ_sel + 0.4 * occ_target
             )
         return updated_grid
 
-    # ------------------------------------------------------------------
-    # Path cost
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------
+    # Path cost: cost of moving between two viewpoints = straight line distance. 
+    # This is what lambda_cost multiplies in the objective, to discourage unnecessarily long moves.
+    # ------------------------------------------------------
     def motion_cost(self, pos_prev: torch.Tensor, pos_next: torch.Tensor) -> float:
         return torch.norm(pos_next - pos_prev).item()
 
     # ------------------------------------------------------------------
-    # 3. Incremental IG sequence evaluation
+    # Incremental IG sequence evaluation
     # ------------------------------------------------------------------
     def evaluate_sequence(
         self, sequence: torch.Tensor, start_pos: torch.Tensor
@@ -429,17 +437,21 @@ class RHPlanner:
         of this sequence — prevents rewarding stationary sequences.
         """
         J         = 0.0
+        # J is the total score of this whole sequence. 
+        # M_pred is a private copy of the belief grid that we roll forward step by step as if each view really happened.
         prev_pos  = start_pos.clone()
         M_pred    = self.voxel_grid.voxel_grid.clone()
+ 
 
         for k in range(self.horizon):
-            xi_k = sequence[k]
+            xi_k = sequence[k]  # the k-th viewpoint in this candidate sequence
 
+            # How much this view is worth given everything the earlier steps already saw
             # Full gain at this step
             gain_full = self.compute_gain_on_grid(M_pred, xi_k)
 
             # Incremental: subtract gain already counted in seen positions
-            # Approximate: if camera hasn't moved much, gain is redundant
+            # if camera hasn't moved much, gain is redundant
             if k > 0:
                 min_dist_to_seen = min(
                     torch.norm(xi_k - sequence[j]).item()
@@ -473,14 +485,15 @@ class RHPlanner:
         """
         iter_ray_calls_before = self.ray_trace_count
 
-        # 5. Adaptive horizon — DISABLED for controlled ablation.
-        # H must stay fixed at the value set in __init__ so that the
-        # ablation study over H in {1,2,3,4} is a controlled variable.
+        # Adaptive horizon — DISABLED for controlled ablation.
+        # H must stay fixed at the value set in __init__ 
+        # so that the ablation study over H in {1,2,3,4} is a controlled variable.
         # To re-enable adaptive H as a separate experiment, uncomment:
         # if self.use_adaptive_horizon:
         #     self.horizon = self._adaptive_horizon(current_coverage)
 
-        # 4. Stagnation check
+        # Stagnation check
+        # if coverage grew by less than the threshold this iteration, count it as a stagnant step. enough stagnant steps in a row means we are stuck.
         if abs(current_coverage - self._last_coverage) < self.stagnation_threshold:
             self._stagnation_counter += 1
         else:
@@ -518,17 +531,27 @@ class RHPlanner:
                     best_dist   = d
                     best_escape = candidate
             if best_escape is not None and best_dist > self.step_size * 2:
+                best_escape = self._project_to_shell(best_escape)
+                best_escape = self._push_to_min_standoff(best_escape)
+                if not self._within_reach(best_escape) and self.robot_reach_bounds is not None:
+                    best_escape = torch.max(
+                        torch.min(best_escape, self.robot_reach_bounds[1]),
+                        self.robot_reach_bounds[0],
+                    )
                 self.current_pos = best_escape
             self._stagnation_counter = 0
 
+        # this is the core RH loop: 
+        # Sample K whole candidate sequences, score each one, and remember the best. 
+        # We keep all of them for the candidate plots.
         best_J         = -np.inf
         best_sequence  = None
         iter_candidates = []
         best_idx       = 0
 
         for k in range(self.num_candidates):
-            sequence = self.generate_candidate_sequence(self.current_pos)
-            J        = self.evaluate_sequence(sequence, self.current_pos)
+            sequence = self.generate_candidate_sequence(self.current_pos)  # H-step plan
+            J        = self.evaluate_sequence(sequence, self.current_pos)  # its total score
             iter_candidates.append({
                 "sequence": sequence.detach().cpu().numpy(),
                 "score":    J,
@@ -547,9 +570,13 @@ class RHPlanner:
         })
 
         # Receding horizon: execute only first step
+        # even though we planned H steps ahead, we actually commit only to the first step of the best sequence. 
+        # Next iteration we re-plan from there with fresh information. this is what makes RH robust.
         best_first_pos   = best_sequence[0]
         self.current_pos = best_first_pos.clone()
 
+        # pack the chosen position plus its look-at orientation into a 7D pose
+        # (x, y, z, qx, qy, qz, qw) which is what the arm controller expects
         quat      = look_at_rotation(best_first_pos, self.target_params)
         viewpoint = np.zeros(7)
         viewpoint[:3] = best_first_pos.detach().cpu().numpy()
@@ -560,6 +587,7 @@ class RHPlanner:
 
 
     # Occluded recall
+    # Called once at the very start (empty grid). It records which ground truth mesh points are NOT yet visible,
     def set_occluded_mesh_points(self):
         voxel_points, _, _ = self.get_occupied_points()
         vsize = float(np.asarray(self.voxel_grid.voxel_size.detach().cpu().numpy()).reshape(-1)[0])
@@ -612,10 +640,10 @@ class RHPlanner:
         self, depth_image: np.array, semantics: torch.tensor, viewpoint: np.array
     ):
         depth_image = torch.tensor(depth_image, dtype=torch.float32, device=self.device)
-        position    = torch.tensor(viewpoint[:3], dtype=torch.float32, device=self.device)
-        orientation = torch.tensor(viewpoint[3:], dtype=torch.float32, device=self.device)
+        cmd_position = torch.tensor(viewpoint[:3], dtype=torch.float32, device=self.device)
+        orientation  = torch.tensor(viewpoint[3:], dtype=torch.float32, device=self.device)
         R_cws = quaternion_to_matrix(orientation[None, :])[0]
-        position = position + R_cws @ self._D455_COLOR_TO_DEPTH.to(self.device)
+        position = cmd_position + R_cws @ self._D455_COLOR_TO_DEPTH.to(self.device)
         transform   = transform_from_rotation_translation(
             orientation[None, :], position[None, :]
         )
@@ -624,7 +652,7 @@ class RHPlanner:
         )
         if coverage is not None and hasattr(coverage, "cpu"):
             coverage = float(coverage.cpu().numpy())
-        self.current_pos = position.clone()
+        self.current_pos = cmd_position.clone()
         return coverage
 
 
@@ -640,7 +668,7 @@ class RHPlanner:
         )
 
 
-    # F1 / recall / precision — Burusa Table II aligned
+    # F1 / recall / precision
     def calculate_F1(self, occluder_positions=None, match_threshold=None,
                      diagnose=False):
         """
@@ -674,7 +702,7 @@ class RHPlanner:
             return 0, 0, 0
 
         # 1) Keep only target-class voxels (Burusa: class 0 = fruit node).
-        #    sem_class may be empty/scalar in degenerate early frames — guard it.
+        # sem_class may be empty/scalar in degenerate early frames — guard it.
         sem_class = np.asarray(sem_class)
         n_class0 = int(np.sum(sem_class == 0)) if sem_class.shape[0] == voxel_points.shape[0] else -1
         print(f"  [F1 DIAG] occupied={len(voxel_points)} class0={n_class0} class-1={int(np.sum(sem_class==-1)) if n_class0>=0 else '?'}")
@@ -700,10 +728,8 @@ class RHPlanner:
             self.target_voxels = np.zeros((0, 3))
             return 0, 0, 0
 
-        # Keep the full set of reconstructed target-class voxels (before the ROI
-        # clip) for visualisation. F1 below is scored only inside the ROI, but
-        # the reconstruction plot should show everything the camera actually
-        # recovered of the object surface, not just the ROI slice.
+        # Keep the full set of reconstructed target-class voxels (before the ROI clip) for visualisation. 
+        # F1 below is scored only inside the ROI, but the reconstruction plot should show everything the camera actually recovered of the object surface, not just the ROI slice.
         self.all_target_voxels = voxel_points.copy()
 
         # 3) Clip both voxels and mesh to the ROI cube around the target.
@@ -712,7 +738,7 @@ class RHPlanner:
         #    smaller cube here (the old 30mm) made F1 score only a thin central
         #    slice while coverage counted the whole 150mm region, which is why
         #    the reconstruction plot looked like a thin strip and F1/coverage
-        #    disagreed. Keep both ROIs identical. Overridable via ROI_HALF env.
+        #    disagreed.
         target   = self.target_params.detach().cpu().numpy()
         roi_half = float(os.environ.get("ROI_HALF", ROI_HALF))
         v_in_roi = np.all(np.abs(voxel_points - target) <= roi_half, axis=1)
@@ -749,10 +775,7 @@ class RHPlanner:
         half   = match_threshold
         radius = half * np.sqrt(3)
 
-        # --- Optional diagnostic: voxel->mesh nearest-distance distribution ---
-        # This reveals whether voxels actually lie ON the mesh surface (small
-        # distances -> threshold problem) or are offset in space (large
-        # distances -> coordinate/calibration mismatch).
+        # ----- Optional diagnostic-----
         if diagnose:
             d_vox2mesh, nn_idx = mesh_tree.query(voxel_points)
             pct = np.percentile(d_vox2mesh, [0, 25, 50, 75, 100]) * 1000
@@ -806,7 +829,7 @@ class RHPlanner:
                     nr_recalled += 1
                     break
 
-        # Explicit TP / FP / FN (supervisor request).
+        # Explicit TP / FP / FN
         self.last_tp = nr_correct
         self.last_fp = len(voxel_points) - nr_correct
         self.last_fn = len(roi_mesh) - nr_recalled
