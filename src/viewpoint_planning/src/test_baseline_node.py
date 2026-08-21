@@ -14,8 +14,11 @@ import time
 import datetime
 
 import numpy as np
+import torch
 import matplotlib
 matplotlib.use("Agg")
+
+from utils.torch_utils import quaternion_to_matrix
 
 import ros2_node  # ROS 2 singleton (replaces rospy.init_node)
 
@@ -43,6 +46,7 @@ try:
         jitter_start_pose as fc_jitter_start_pose,
         seed_for_trial as fc_seed_for_trial,
         BASE_SEED,
+        load_panel_occluders,
     )
 except ModuleNotFoundError:
     from viewpoint_planners.fair_comparison_config import (
@@ -51,6 +55,7 @@ except ModuleNotFoundError:
         jitter_start_pose as fc_jitter_start_pose,
         seed_for_trial as fc_seed_for_trial,
         BASE_SEED,
+        load_panel_occluders,
     )
 
 from plots.plot_coverage import plot_coverage_progression
@@ -129,6 +134,46 @@ def get_mesh_coordinates():
 
 def spawn_occlusion(sdf, occ):
     pass  # panels defined in world SDF files (ur5e_world_<occ>.sdf)
+
+
+# D455 color-to-depth extrinsic: camera_link = camera_color_frame
+# + R_cws @ [0, +0.059, 0]. GradientNBVPlanner and RHPlanner apply this
+# inside update_voxel_grid; the PSO/Random planners predate that fix, so the
+# driver corrects the insertion pose instead (the commanded arm pose is
+# unchanged). Without it every insertion lands 59 mm off in a view-dependent
+# direction, far beyond the F1 matching thresholds.
+_D455_COLOR_TO_DEPTH = np.array([0.0, 0.059, 0.0])
+
+
+# RandomPlanner.update_voxel_grid predates the VoxelGrid change that can
+# return a plain float and crashes on `coverage.cpu()`; GradientNBV/RH were
+# updated with a hasattr guard, the baselines were not. Driver-level override
+# with the same guard — planner algorithm untouched (glue code only).
+def _guarded_random_update(self, depth_image, semantics, viewpoint):
+    depth_image = torch.tensor(depth_image, dtype=torch.float32, device=self.device)
+    position = torch.tensor(viewpoint[:3], dtype=torch.float32, device=self.device)
+    orientation = torch.tensor(viewpoint[3:], dtype=torch.float32, device=self.device)
+    from utils.torch_utils import transform_from_rotation_translation
+    transform = transform_from_rotation_translation(
+        orientation[None, :], position[None, :]
+    )
+    coverage = self.voxel_grid.insert_depth_and_semantics(
+        depth_image, semantics, transform
+    )
+    if coverage is not None and hasattr(coverage, "cpu"):
+        coverage = coverage.cpu().numpy()
+    return coverage
+
+
+RandomPlanner.update_voxel_grid = _guarded_random_update
+
+
+def insertion_pose(viewpoint):
+    q = torch.tensor(viewpoint[3:], dtype=torch.float32)
+    R_cws = quaternion_to_matrix(q[None, :])[0].numpy()
+    vp = np.array(viewpoint, dtype=float, copy=True)
+    vp[:3] += R_cws @ _D455_COLOR_TO_DEPTH
+    return vp
 
 
 def make_run_dir(occ):
@@ -213,7 +258,7 @@ def run_single_trial(trial_idx, occ, run_dir, mesh_coords, mesh_tree,
         if ok:
             depth, _, sem = perceiver.run()
             if depth is not None and sem is not None:
-                cov = planner.update_voxel_grid(depth, sem, viewpoint)
+                cov = planner.update_voxel_grid(depth, sem, insertion_pose(viewpoint))
                 cov = float(cov) if cov is not None else coverages[-1]
             else:
                 cov = coverages[-1]
@@ -233,6 +278,10 @@ def run_single_trial(trial_idx, occ, run_dir, mesh_coords, mesh_tree,
                 (np.array([0.43, -0.30, 1.10]), np.array([0.012, 0.052, 0.102])),
                 (np.array([0.57, -0.30, 1.10]), np.array([0.012, 0.052, 0.102])),
             ]
+        elif occ.startswith("panels"):
+            # generated scenario — AABBs come from the manifest written by
+            # make_panel_world.py (see fair_comparison_config)
+            occ_positions = load_panel_occluders()
         f1, rec, prec = planner.calculate_F1(
             occluder_positions=occ_positions, diagnose=diag)
         recalls.append(rec); precisions.append(prec)
@@ -328,6 +377,21 @@ if __name__ == "__main__":
 
     occ = detect_occlusion_type()
     spawn_occlusion(sdf, occ)
+
+    # Camera warm-up gate: for the first minutes after a stack (re)start the
+    # gz bridge can deliver no frames even though `ros2 topic echo --once`
+    # succeeds. The fast Random runs (~10 s/view) fit entirely inside that
+    # dead window (observed on the tree runs, 2026-07-18), recording 20 views
+    # of zero data. Block until the perceiver actually returns a frame pair.
+    _t0 = time.time()
+    while time.time() - _t0 < 300:
+        _d, _, _s = perceiver.run()
+        if _d is not None and _s is not None:
+            print(f"[baseline] camera stream up after {time.time() - _t0:.0f}s")
+            break
+        time.sleep(2)
+    else:
+        print("[baseline] WARNING: no camera data after 300s — proceeding anyway")
 
     mesh_coords, mesh_tree = get_mesh_coordinates()
     run_dir = make_run_dir(occ)

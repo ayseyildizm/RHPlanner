@@ -1,0 +1,19 @@
+{
+  "scenario": "stage1",
+  "panels": [
+    {
+      "name": "panel_1",
+      "face": "right",
+      "center": [
+        0.622,
+        -0.3,
+        0.875
+      ],
+      "half": [
+        0.013,
+        0.088,
+        0.058
+      ]
+    }
+  ]
+}

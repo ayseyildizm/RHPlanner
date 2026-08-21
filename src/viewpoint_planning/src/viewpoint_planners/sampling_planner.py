@@ -24,10 +24,17 @@ from scene_representation.voxel_grid import VoxelGrid
 from utils.rviz_visualizer import RvizVisualizer
 from utils.py_utils import numpy_to_pose_array
 from utils.torch_utils import look_at_rotation, transform_from_rotation_translation
+from viewpoint_planners.planner_eval_mixin import PlannerEvalMixin, init_eval_state
 
 
-class SamplingPlanner:
-    """Local-sphere sampling NBV (Burusa et al. 2023)."""
+class SamplingPlanner(PlannerEvalMixin):
+    """Local-sphere sampling NBV (Burusa et al. 2023).
+
+    Inherits PlannerEvalMixin (identical to PSO/Random/RH/GradientNBV) so its
+    F1/recall/precision, occluder masking, ROI crop and TP/FP/FN follow the
+    exact same fair-comparison convention. The planner's own sampling
+    algorithm is untouched; only the evaluation glue is shared.
+    """
 
     def __init__(
         self,
@@ -106,6 +113,12 @@ class SamplingPlanner:
             torch.cuda.manual_seed_all(self.rng_seed)
 
         self.target_voxels = np.array(0)
+
+        # Initialise the shared PlannerEvalMixin state (target_voxels,
+        # all_target_voxels, occluded_mesh_points, last_tp/fp/fn) so the
+        # occluder-aware, ROI-cropped calculate_F1() from the mixin works
+        # exactly as it does for PSO/Random/RH/GradientNBV.
+        init_eval_state(self)
 
     # ------------------------------------------------------------------
     # Burusa semantic information gain (identical to RHPlanner.compute_gain)

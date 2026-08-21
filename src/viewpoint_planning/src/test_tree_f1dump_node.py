@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""
+test_tree_f1dump_node.py — tree run that additionally persists everything an
+offline F1-threshold sweep needs. Nothing in the existing pipeline is modified.
+
+Motivation (2026-08-04): at the plant attention levels all four planners score
+F1 within 0.05 of each other, and the random walk matches RH-NBV. The suspicion
+is that the 2*rho matching tolerance saturates the score. Testing that needs F1
+recomputed at other thresholds, which needs the reconstructed target voxels and
+the ground-truth mesh on disk — the plant runs never saved them.
+
+Patches (in sys.modules, so the inner node picks them up through runpy):
+  * RHPlanner.calculate_F1, PlannerEvalMixin.calculate_F1 and
+    GradientNBVPlanner.calculate_F1 -> after the
+    original call, snapshot self.target_voxels (the ROI-cropped, occluder-
+    masked, target-class voxels the score was computed from)
+  * metrics.save_and_print -> write f1_sweep_dump.npz next to metrics_*.json,
+    using the same prefix, so the dump always lands in the right trial dir
+
+The npz holds: mesh (full GT), target (ROI centre), roi_half, f1_thresh,
+voxel_size, n_iters, and v00..vNN (per-iteration target voxels).
+
+Env:
+    INNER_NODE   node to run underneath; default test_rh_tree_node.py
+                 (use test_baseline_tree_node.py for PSO/Random)
+    ...plus every variable the inner node already understands.
+"""
+import os
+import runpy
+import sys
+
+import numpy as np
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+import metrics as _metrics
+from viewpoint_planners.planner_eval_mixin import PlannerEvalMixin
+from viewpoint_planners.rh_planner import RHPlanner
+
+_snaps = []
+_state = {"mesh": None, "target": None}
+
+
+def _as_points(v):
+    if isinstance(v, np.ndarray) and v.ndim == 2 and v.shape[1] == 3:
+        return v.astype(np.float32).copy()
+    return np.zeros((0, 3), dtype=np.float32)
+
+
+def _patch(cls):
+    orig = cls.calculate_F1
+
+    def calculate_F1(self, *args, **kwargs):
+        out = orig(self, *args, **kwargs)
+        _snaps.append(_as_points(getattr(self, "target_voxels", None)))
+        if _state["mesh"] is None:
+            mc = getattr(self, "mesh_coordinates", None)
+            if mc is not None:
+                _state["mesh"] = np.asarray(mc, dtype=np.float32).copy()
+        tp = getattr(self, "target_params", None)
+        if tp is not None:
+            tp = tp.detach().cpu().numpy() if hasattr(tp, "detach") else tp
+            _state["target"] = np.asarray(tp, dtype=np.float32).reshape(-1)
+        return out
+
+    calculate_F1.__name__ = "calculate_F1"
+    cls.calculate_F1 = calculate_F1
+
+
+_patch(RHPlanner)
+_patch(PlannerEvalMixin)
+
+# GradientNBVPlanner subclasses nn.Module, NOT PlannerEvalMixin, and carries its
+# own calculate_F1 (gradient_nbv_planner.py:189). Without this it is missed by
+# both patches above and a PLANNER=gradient run writes an empty dump — which is
+# what the 2026-08-04 attempt hit. Guarded so an RH-only run never breaks on it.
+try:
+    from viewpoint_planners.gradient_nbv_planner import GradientNBVPlanner
+    _patch(GradientNBVPlanner)
+except Exception as _exc:                          # pragma: no cover
+    print(f"[f1dump] GradientNBVPlanner not patched: {_exc}")
+
+_orig_save = _metrics.save_and_print
+
+
+def _save_and_print(results, prefix="results", experiment="D"):
+    out = _orig_save(results, prefix=prefix, experiment=experiment)
+    try:
+        d = os.path.dirname(prefix) or "."
+        path = os.path.join(d, "f1_sweep_dump.npz")
+        np.savez_compressed(
+            path,
+            mesh=_state["mesh"] if _state["mesh"] is not None else np.zeros((0, 3), np.float32),
+            target=_state["target"] if _state["target"] is not None else np.zeros(3, np.float32),
+            roi_half=float(os.environ.get("ROI_HALF", 0.095)),
+            f1_thresh=float(os.environ.get("F1_THRESH", 0.0)),
+            voxel_size=float(os.environ.get("VOXEL_SIZE", 0.003)),
+            n_iters=len(_snaps),
+            **{f"v{i:02d}": s for i, s in enumerate(_snaps)},
+        )
+        print(f"[f1dump] wrote {path} — {len(_snaps)} snapshots, "
+              f"last {_snaps[-1].shape if _snaps else '(none)'}, "
+              f"mesh {_state['mesh'].shape if _state['mesh'] is not None else '(none)'}")
+    except Exception as exc:                       # never break a real run
+        print(f"[f1dump] dump failed: {exc}")
+    return out
+
+
+_metrics.save_and_print = _save_and_print
+
+_inner = os.environ.get("INNER_NODE", "test_rh_tree_node.py")
+print(f"[f1dump] patched calculate_F1 + save_and_print; inner node: {_inner}")
+runpy.run_path(os.path.join(_HERE, _inner), run_name="__main__")

@@ -1,0 +1,175 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="bunny_world">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin filename="gz-sim-physics-system"
+            name="gz::sim::systems::Physics">
+    </plugin>
+    <plugin filename="gz-sim-user-commands-system"
+            name="gz::sim::systems::UserCommands">
+    </plugin>
+    <plugin filename="gz-sim-scene-broadcaster-system"
+            name="gz::sim::systems::SceneBroadcaster">
+    </plugin>
+    <plugin filename="gz-sim-contact-system"
+            name="gz::sim::systems::Contact">
+    </plugin>
+    <plugin filename="gz-sim-sensors-system"
+            name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+            <specular>0.8 0.8 0.8 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="bunny">
+      <static>true</static>
+      <pose>0.5 -0.30 0.85 0 0 0</pose>
+      <link name="body">
+        <collision name="collision">
+          <geometry>
+            <mesh>
+              <uri>file:///home/ayse/Desktop/RecedingHorizon/src/simulation_environment/meshes/bunny.dae</uri>
+              <scale>1.2 1.2 1.2</scale>
+            </mesh>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <mesh>
+              <uri>file:///home/ayse/Desktop/RecedingHorizon/src/simulation_environment/meshes/bunny.dae</uri>
+              <scale>1.2 1.2 1.2</scale>
+            </mesh>
+          </geometry>
+          <material>
+            <ambient>0.8 0.1 0.1 1</ambient>
+            <diffuse>0.8 0.1 0.1 1</diffuse>
+            <specular>0.1 0.1 0.1 1</specular>
+            <emissive>0.3 0.0 0.0 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- panel #1 (right): size 0.020x0.245x0.184 -->
+    <model name="panel_1">
+      <static>true</static>
+      <pose>0.654 -0.301 0.892 0 0 0.0000</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.020 0.245 0.184</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.020 0.245 0.184</size></box></geometry>
+          <material><ambient>0.8 0.6 0.2 1</ambient><diffuse>0.8 0.6 0.2 1</diffuse><specular>0.2 0.2 0.2 1</specular></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- panel #2 (left): size 0.020x0.245x0.184 -->
+    <model name="panel_2">
+      <static>true</static>
+      <pose>0.387 -0.301 0.892 0 0 0.0000</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.020 0.245 0.184</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.020 0.245 0.184</size></box></geometry>
+          <material><ambient>0.8 0.6 0.2 1</ambient><diffuse>0.8 0.6 0.2 1</diffuse><specular>0.2 0.2 0.2 1</specular></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- panel #3 (front): size 0.247x0.020x0.184 -->
+    <model name="panel_3">
+      <static>true</static>
+      <pose>0.520 -0.189 0.892 0 0 0.0000</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.247 0.020 0.184</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.247 0.020 0.184</size></box></geometry>
+          <material><ambient>0.8 0.6 0.2 1</ambient><diffuse>0.8 0.6 0.2 1</diffuse><specular>0.2 0.2 0.2 1</specular></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- panel #4 (back): size 0.247x0.020x0.184 -->
+    <model name="panel_4">
+      <static>true</static>
+      <pose>0.520 -0.414 0.892 0 0 0.0000</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.247 0.020 0.184</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.247 0.020 0.184</size></box></geometry>
+          <material><ambient>0.8 0.6 0.2 1</ambient><diffuse>0.8 0.6 0.2 1</diffuse><specular>0.2 0.2 0.2 1</specular></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- panel #5 (bottom): size 0.287x0.245x0.020 -->
+    <model name="panel_5">
+      <static>true</static>
+      <pose>0.520 -0.301 0.790 0 0 0.0000</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.287 0.245 0.020</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.287 0.245 0.020</size></box></geometry>
+          <material><ambient>0.8 0.6 0.2 1</ambient><diffuse>0.8 0.6 0.2 1</diffuse><specular>0.2 0.2 0.2 1</specular></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- panel #6 (top): size 0.287x0.245x0.020 -->
+    <model name="panel_6">
+      <static>true</static>
+      <pose>0.520 -0.301 0.994 0 0 0.0000</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.287 0.245 0.020</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.287 0.245 0.020</size></box></geometry>
+          <material><ambient>0.8 0.6 0.2 1</ambient><diffuse>0.8 0.6 0.2 1</diffuse><specular>0.2 0.2 0.2 1</specular></material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>

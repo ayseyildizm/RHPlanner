@@ -1,0 +1,36 @@
+@startuml pipeline_activity
+' RecedingHorizon — End-to-end pipeline
+' Render: plantuml -tsvg pipeline_activity.puml
+skinparam shadowing false
+
+start
+:Scene setup:
+occlusion scenario via SDFSpawner
+(frontal / tunnel / well / panels);
+:Initial pose (ViewpointSampler.predefine_start_pose);
+repeat
+  :Capture RGB-D:
+  RealsenseROSCapturer ← /camera/* topics;
+  :Perception (Perceiver):
+  HSV segmentation + semantic log-odds;
+  :Update VoxelGrid:
+  insert_depth_and_semantics (log-odds fusion);
+  :Metrics: coverage, F1, σ, occluded recall;
+  :RH-NBV planning (RHPlanner.rh_view):
+  K candidate sequences × horizon H,
+  gain − λ·motion cost, γ discount;
+  :Execute only the FIRST step of the
+  best sequence (receding-horizon principle);
+  :ArmControlClient.move_arm_to_pose → MoveIt;
+  if (IK / motion succeeded?) then (yes)
+    :Camera at new viewpoint;
+  else (no)
+    :Tighten reach bounds, skip pose;
+  endif
+repeat while (iteration < NUM_ITERS?) is (yes)
+->no;
+:Save results:
+JSON metrics + plots in the results directory
+(coverage, trajectory, reconstruction);
+stop
+@enduml

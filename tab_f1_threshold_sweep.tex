@@ -1,0 +1,19 @@
+\begin{table}[H]
+\centering
+\caption{Final $F_1$ and recall at the fruit level (\texttt{panels\_tree\_fruit\_y000}, $20$ viewpoints, one run per planner) recomputed at a range of matching thresholds. The reconstructed voxels and the ground-truth mesh are those of the runs themselves; only the tolerance used to declare a match is varied, so no simulation is repeated. The threshold the runs reported with is marked $^{\star}$; $\rho$ denotes the voxel edge (\SI{3}{\milli\metre}).}
+\label{tab:f1-threshold-sweep}
+\begin{tabular}{l|cc|cc}
+\toprule
+ & \multicolumn{2}{c|}{$F_1$ $\uparrow$} & \multicolumn{2}{c}{Recall $\uparrow$} \\
+Threshold & RH-NBV & GradientNBV & RH-NBV & GradientNBV \\
+\midrule
+\SI{2}{\milli\metre} ($0.667\rho$) & \textbf{0.710} & 0.675 & \textbf{0.607} & 0.567 \\
+\SI{3}{\milli\metre} ($1\rho$) & \textbf{0.889} & 0.868 & \textbf{0.806} & 0.773 \\
+\SI{4}{\milli\metre} ($1.33\rho$) & \textbf{0.937} & 0.918 & \textbf{0.881} & 0.848 \\
+\SI{6}{\milli\metre} ($2\rho$)$^{\star}$ & \textbf{0.978} & 0.969 & \textbf{0.958} & 0.940 \\
+\SI{8}{\milli\metre} ($2.67\rho$) & \textbf{0.993} & 0.990 & \textbf{0.985} & 0.980 \\
+\SI{10}{\milli\metre} ($3.33\rho$) & \textbf{0.999} & 0.998 & \textbf{0.997} & 0.997 \\
+\SI{12}{\milli\metre} ($4\rho$) & 1.000 & \textbf{1.000} & 1.000 & \textbf{1.000} \\
+\bottomrule
+\end{tabular}
+\end{table}

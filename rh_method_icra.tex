@@ -1,0 +1,143 @@
+%=====================================================================
+% ICRA-style METHOD section for the RH-NBV planner (simplified).
+% For the IEEEtran conference template (two-column):
+%   \documentclass[conference]{IEEEtran}
+%   \usepackage{amsmath,algorithm,algpseudocode,booktabs,cite}
+% Citation keys match references.bib in this repo.
+%=====================================================================
+
+\section{PROBLEM FORMULATION}
+\label{sec:problem}
+
+A 6-DoF manipulator carries an RGB-D camera and must perceive a target
+object at a known approximate position $\mathbf{t}$, despite occlusion.
+The scene belief is a voxel grid $M$ that stores, for every voxel, an
+occupancy probability $p_o$ and a semantic probability $p_s$
+\cite{burusa2024}. The camera moves inside a workspace $\mathcal{B}$ and
+always looks at $\mathbf{t}$, so a viewpoint is simply a position
+$\xi \in \mathcal{B}$. Given a budget of $N$ views, the goal is to
+reconstruct the region of interest (ROI) around $\mathbf{t}$ as well as
+possible while moving the camera as little as possible.
+
+\section{PROPOSED APPROACH}
+\label{sec:method}
+
+The planner repeats four steps (Algorithm~\ref{alg:rh}): sample $K$
+candidate view sequences of length $H$, score each sequence, move to the
+first view of the best sequence, and replan after the new measurement.
+Planning $H$ steps ahead avoids the myopia of single-step NBV
+\cite{burusa2024}; executing only the first step keeps the planner
+robust, because every new measurement can change what the best plan is
+\cite{bircher2016}.
+
+\subsection{Viewpoint Utility}
+\label{sec:method-utility}
+
+How much is a single view worth? We cast rays from the candidate
+position through the voxel grid. Each sampled point $i$ on a ray
+contributes its semantic entropy $\mathcal{H}_s(i)$ (how uncertain the
+grid still is about that point), weighted by the transmittance
+$T(i) = \prod_{j<i}(1 - o(j))$, i.e.\ the probability that the ray
+actually reaches the point without being blocked
+\cite{delmerico2018}. Occluded voxels therefore contribute almost
+nothing. The utility of a view is the log of the mean contribution:
+%
+\begin{equation}
+  f(M, \xi) \;=\; \log \Bigl(
+  \tfrac{1}{|\mathcal{R}| N_r}
+  \textstyle\sum_{r \in \mathcal{R}} \sum_{i=1}^{N_r}
+  T(i)\, \mathcal{H}_s(i) + \epsilon \Bigr).
+  \label{eq:utility}
+\end{equation}
+%
+The log does not change the ranking of candidates; it only brings the
+gain to a scale on which one fixed motion-cost weight $\lambda$ works
+for all iterations.
+
+\subsection{Generating Candidate Sequences}
+\label{sec:method-candidates}
+
+A sequence is grown step by step from the current position. With
+probability $b$ the next view is a small \emph{orbit step}: the camera
+slides tangentially on the sphere around $\mathbf{t}$. Since the camera
+always faces the target, only tangential motion changes the viewing
+angle---and new information comes from new angles. With probability
+$1-b$ the next view is a uniform random jump inside $\mathcal{B}$, which
+lets the planner consider completely different regions. Every generated
+position is pushed back to a minimum stand-off distance from the target
+and clamped to the robot reach, so all candidates are feasible.
+
+\subsection{Scoring a Sequence}
+\label{sec:method-evaluation}
+
+A sequence $\Xi = (\xi_0, \dots, \xi_{H-1})$ is scored by
+%
+\begin{equation}
+  J(\Xi) \;=\; \sum_{k=0}^{H-1} \gamma^{k}
+  \Bigl[ \rho_k\, f\bigl(M_{\mathrm{pred}}, \xi_k\bigr)
+  \;-\; \lambda\, \lVert \xi_k - \xi_{k-1} \rVert_2 \Bigr].
+  \label{eq:objective}
+\end{equation}
+%
+Three ingredients matter here:
+
+\emph{a) Forward simulation.} The gain of step $k$ is computed on a
+predicted map $M_{\mathrm{pred}}$, not on the current map. After each
+hypothetical view, the uncertain voxels it would see are moved partially
+towards confident values. This way, step 2 gets no credit for
+information that step 1 would already have collected. Without this, two
+nearby views would be rewarded twice for the same unknown region, which
+is exactly what happens in the additive gain of
+\cite{bircher2016, zhang2022}.
+
+\emph{b) Redundancy penalty.} If a view lies closer than $s/2$ to an
+earlier view of the same sequence, its gain is multiplied by
+$\rho_k = 0.3$ (otherwise $\rho_k = 1$). This discourages sequences that
+barely move.
+
+\emph{c) Discount and motion cost.} $\gamma < 1$ trusts later steps
+less, since they rely on predictions of predictions, and $\lambda$
+penalises long moves.
+
+\subsection{Stagnation Escape}
+\label{sec:method-stagnation}
+
+Orbit steps are local, so the planner can get stuck once a region is
+exhausted. If ROI coverage improves by less than $\tau$ for $P$
+consecutive iterations, the camera jumps to the farthest of $20$ random
+reachable positions. This handles the premature-convergence problem
+reported for purely local planners in occluded scenes
+\cite{verlinden2024pso}.
+
+\begin{algorithm}[t]
+\caption{RH--NBV: one planning iteration}
+\label{alg:rh}
+\begin{algorithmic}[1]
+\Require current position $\xi_0$, belief $M$, target $\mathbf{t}$
+\If{coverage stagnated for $P$ iterations}
+    \State jump to a distant reachable position
+\EndIf
+\For{$i = 1, \dots, K$}
+    \State $\Xi_i \gets$ grow $H$ steps (orbit step with prob.~$b$,
+           else random jump); keep positions feasible
+    \State $J_i \gets$ score $\Xi_i$ with Eq.~\eqref{eq:objective}
+\EndFor
+\State $\Xi^{*} \gets \arg\max_i J_i$
+\State \Return first view of $\Xi^{*}$, looking at $\mathbf{t}$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Implementation Details}
+\label{sec:method-implementation}
+
+We use $H{=}3$, $K{=}10$, $\gamma{=}0.85$, $\lambda{=}2.0$, $b{=}0.7$,
+$P{=}4$, $\tau{=}1.5\%$, and $s{=}0.065$\,m (the step size of
+\cite{burusa2024}); $H$ is varied in an ablation over $\{1,2,3,4\}$.
+One iteration performs $K \cdot H = 30$ gain evaluations on the GPU.
+Following the cost metric of \cite{burusa2024}, the forward-simulation
+updates are not counted as ray-tracing calls, but their runtime is
+included in all timing results. For fairness, the two RH-specific
+extensions with no counterpart in GradientNBV (a spherical orbit shell
+and an occlusion-bonus term) are disabled in all baseline comparisons
+and studied only as ablations; both planners use identical voxel grids,
+workspaces, ROIs, and random seeds.

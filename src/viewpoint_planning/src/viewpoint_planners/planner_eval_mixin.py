@@ -24,6 +24,10 @@ Use init_eval_state(self) to set them all at once.
 import os
 import numpy as np
 from scipy.spatial import KDTree
+try:
+    from fair_comparison_config import ROI_HALF
+except ModuleNotFoundError:
+    from viewpoint_planners.fair_comparison_config import ROI_HALF
 
 
 def init_eval_state(planner):
@@ -99,7 +103,7 @@ class PlannerEvalMixin:
         if hasattr(target, "detach"):
             target = target.detach().cpu().numpy()
         target = np.asarray(target)
-        roi_half = float(os.environ.get("ROI_HALF", 0.075))
+        roi_half = float(os.environ.get("ROI_HALF", ROI_HALF))
         voxel_points = voxel_points[
             np.all(np.abs(voxel_points - target) <= roi_half, axis=1)
         ]
@@ -124,7 +128,6 @@ class PlannerEvalMixin:
             vsize = float(np.asarray(vs).reshape(-1)[0])
             match_threshold = float(os.environ.get("F1_THRESH", vsize * 4.0))
         half = match_threshold
-        radius = half * np.sqrt(3)
 
         if diagnose:
             d, _ = mesh_tree.query(voxel_points)
@@ -134,19 +137,11 @@ class PlannerEvalMixin:
                   f"thr={half*1000:.1f}mm | within thr="
                   f"{float(np.mean(d <= half))*100:.1f}%")
 
-        nr_correct = 0
-        for v in voxel_points:
-            for idx in mesh_tree.query_ball_point(v, r=radius):
-                if all(abs(v[d_] - roi_mesh[idx][d_]) <= half for d_ in range(3)):
-                    nr_correct += 1
-                    break
+        d_tp, _ = mesh_tree.query(voxel_points, k=1, p=np.inf)
+        nr_correct = int(np.sum(d_tp <= half))
 
-        nr_recalled = 0
-        for c in roi_mesh:
-            for idx in voxel_tree.query_ball_point(c, r=radius):
-                if all(abs(voxel_points[idx][d_] - c[d_]) <= half for d_ in range(3)):
-                    nr_recalled += 1
-                    break
+        d_rec, _ = voxel_tree.query(roi_mesh, k=1, p=np.inf)
+        nr_recalled = int(np.sum(d_rec <= half))
 
         self.last_tp = nr_correct
         self.last_fp = len(voxel_points) - nr_correct
@@ -165,21 +160,14 @@ class PlannerEvalMixin:
         if hasattr(vs, "detach"):
             vs = vs.detach().cpu().numpy()
         half = float(np.asarray(vs).reshape(-1)[0]) * 4.0
-        radius = half * np.sqrt(3)
         if len(voxel_points) == 0:
             self.occluded_mesh_points = self.mesh_coordinates.copy()
             return
         voxel_tree = KDTree(voxel_points)
-        unseen = []
-        for coord in self.mesh_coordinates:
-            idxs = voxel_tree.query_ball_point(coord, r=radius)
-            covered = any(
-                all(abs(voxel_points[i][d] - coord[d]) <= half for d in range(3))
-                for i in idxs
-            )
-            if not covered:
-                unseen.append(coord)
-        self.occluded_mesh_points = np.array(unseen) if unseen else np.zeros((0, 3))
+        d_nn, _ = voxel_tree.query(self.mesh_coordinates, k=1, p=np.inf)
+        unseen = self.mesh_coordinates[d_nn > half]
+        self.occluded_mesh_points = (unseen.copy() if len(unseen)
+                                     else np.zeros((0, 3)))
         print(f"[{type(self).__name__}] Occluded after view 0: "
               f"{len(self.occluded_mesh_points)}/{len(self.mesh_coordinates)} "
               f"({100*len(self.occluded_mesh_points)/len(self.mesh_coordinates):.1f}%)")
@@ -195,15 +183,8 @@ class PlannerEvalMixin:
         if hasattr(vs, "detach"):
             vs = vs.detach().cpu().numpy()
         half = float(np.asarray(vs).reshape(-1)[0]) * 4.0
-        radius = half * np.sqrt(3)
-        recovered = 0
-        for coord in self.occluded_mesh_points:
-            idxs = voxel_tree.query_ball_point(coord, r=radius)
-            if any(
-                all(abs(voxel_points[i][d] - coord[d]) <= half for d in range(3))
-                for i in idxs
-            ):
-                recovered += 1
+        d_nn, _ = voxel_tree.query(self.occluded_mesh_points, k=1, p=np.inf)
+        recovered = int(np.sum(d_nn <= half))
         return recovered / len(self.occluded_mesh_points)
 
     # ---- Sigma: spatial spread of detected target voxels (identical to RH) ----

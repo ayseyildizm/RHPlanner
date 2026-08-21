@@ -1,0 +1,64 @@
+@startuml core_class_diagram
+' RecedingHorizon — Simplified core UML class diagram (main thesis figure)
+' Render: plantuml -tsvg core_class_diagram.puml
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam linetype ortho
+skinparam defaultFontSize 13
+hide empty members
+
+class test_rh_node <<ROS2 Node>> {
+  experiment loop (NUM_ITERS)
+  result / plot logging
+}
+
+class ViewpointPlanning <<Orchestrator>> {
+  +run_rh() : metrics
+}
+
+class RHPlanner <<Proposed method>> {
+  +rh_view() : next pose
+  +generate_candidate_sequence()
+  +evaluate_sequence()
+  +update_voxel_grid()
+}
+
+class VoxelGrid <<Scene representation>> {
+  +insert_depth_and_semantics()
+  +compute_gain()
+}
+
+class Perceiver <<Perception>> {
+  +run() : depth + semantics
+  +color_segmentation()
+}
+
+class RealsenseROSCapturer <<Camera>> {
+  +get_frames()
+  /camera/* topics
+}
+
+class ArmControlClient <<Robot control>> {
+  +move_arm_to_pose()
+  +get_camera_pose()
+}
+
+class GradientNBVPlanner <<baseline>>
+class RandomPlanner <<baseline>>
+class PsoPlanner <<baseline>>
+
+test_rh_node ..> ViewpointPlanning : runs
+
+ViewpointPlanning *-- RHPlanner : planning
+ViewpointPlanning *-- Perceiver : perception
+ViewpointPlanning *-- ArmControlClient : motion
+
+RHPlanner *-- VoxelGrid : information gain /\nmeasurement fusion
+Perceiver *-- RealsenseROSCapturer : RGB-D
+
+GradientNBVPlanner o-- VoxelGrid
+RandomPlanner o-- VoxelGrid
+PsoPlanner o-- VoxelGrid
+
+ArmControlClient ..> RealsenseROSCapturer : moves camera to\nnew viewpoint
+@enduml

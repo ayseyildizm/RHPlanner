@@ -1,0 +1,43 @@
+@startuml pipeline_sequence
+' RecedingHorizon — One RH-NBV planning iteration (run_rh)
+' Render: plantuml -tsvg pipeline_sequence.puml
+skinparam shadowing false
+
+participant "test_rh_node" as D
+participant "ViewpointPlanning" as VP
+participant "RHPlanner" as RH
+participant "VoxelGrid" as VG
+participant "ArmControlClient" as ARM
+participant "Perceiver" as P
+participant "RealSense\n(ROS topics)" as CAM
+
+D -> VP : run_rh()
+VP -> RH : rh_view(current_coverage)
+loop K candidate sequences (horizon H)
+  RH -> RH : generate_candidate_sequence()
+  RH -> VG : compute_gain (ray casting)
+  VG --> RH : expected information gain
+  RH -> RH : evaluate_sequence()\n(gain − λ·cost, γ discount)
+end
+RH --> VP : first step of best sequence (camera pose)
+
+VP -> ARM : move_arm_to_pose(pose)
+ARM --> VP : success / failure
+
+alt motion succeeded
+  VP -> P : run()
+  P -> CAM : get_frames()
+  CAM --> P : RGB-D + point cloud
+  P -> P : color_segmentation() + assign_semantics()
+  P --> VP : depth_image, semantics
+  VP -> RH : update_voxel_grid(depth, semantics, pose)
+  RH -> VG : insert_depth_and_semantics()
+  VG --> RH : coverage
+else IK failed
+  VP -> VP : tighten reach bounds,\ndrop pose from trajectory
+end
+
+VP -> RH : calculate_F1(), compute_sigma(),\ncompute_occluded_recall()
+RH --> VP : F1, recall, precision, σ
+VP --> D : coverage, loss, F1, ... (metric arrays)
+@enduml

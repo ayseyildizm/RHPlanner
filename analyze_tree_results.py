@@ -21,8 +21,9 @@ import numpy as np
 
 RESULTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
 RUN_RE = re.compile(
-    r"run_(\d{8}_\d{6})_exp\w_panels_tree_(\w+?)_y(\d{3})_(GradientNBV|K10_H3_box)$")
-PLANNER_NAME = {"GradientNBV": "GradientNBV", "K10_H3_box": "RH-NBV"}
+    r"run_(\d{8}_\d{6})_exp\w_panels_tree_(\w+?)_y(\d{3})_(GradientNBV|K10_H3_box|PSO|Random)$")
+PLANNER_NAME = {"GradientNBV": "GradientNBV", "K10_H3_box": "RH-NBV",
+                "PSO": "PSO", "Random": "Random"}
 
 
 def views_to(cov, tau):
@@ -116,7 +117,7 @@ if __name__ == "__main__":
 
     for stage in stages:
         print(f"\n=== STAGE: {stage} ===")
-        for planner in ("GradientNBV", "RH-NBV"):
+        for planner in ("GradientNBV", "RH-NBV", "PSO", "Random"):
             yaw_runs = runs.get((stage, planner), {})
             if not yaw_runs:
                 print(f"  {planner}: no runs")

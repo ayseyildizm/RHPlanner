@@ -39,6 +39,7 @@ kill_stack() {
     # mid-flight leaves stale transport state -> zombie stacks).
     pkill -9 -f "test_rh_tree_node.py" 2>/dev/null
     pkill -9 -f "test_gradient_tree_node.py" 2>/dev/null
+    pkill -9 -f "test_baseline_tree_node.py" 2>/dev/null
     pkill -INT -f "move_group_gz_ur5e.launch.py" 2>/dev/null
     for _ in $(seq 1 15); do
         pgrep -f "worlds/ur5e_world" >/dev/null || break
@@ -95,6 +96,7 @@ run_one() {  # $1=OCC  $2=rh|gradient  $3=TOMATO_TARGET  $4=yaw  $5=ROI_HALF  $6
     cd "$RH_DIR"
     local tmo=9000 marker="All trials complete"
     if [ "$planner" = "gradient" ]; then tmo=6000; marker="baseline complete"; fi
+    case "$planner" in pso|random) tmo=6000; marker="tree baseline complete";; esac
     local log="$LOGS/run_${occ}_${planner}.log"
     for attempt in 1 2; do
         say "START $occ $planner (attempt $attempt)"
@@ -114,6 +116,7 @@ run_one() {  # $1=OCC  $2=rh|gradient  $3=TOMATO_TARGET  $4=yaw  $5=ROI_HALF  $6
                 sleep 15
                 pkill -9 -f "test_rh_tree_node.py" 2>/dev/null
                 pkill -9 -f "test_gradient_tree_node.py" 2>/dev/null
+                pkill -9 -f "test_baseline_tree_node.py" 2>/dev/null
                 break
             fi
             sleep 15
@@ -142,7 +145,7 @@ run_one() {  # $1=OCC  $2=rh|gradient  $3=TOMATO_TARGET  $4=yaw  $5=ROI_HALF  $6
 }
 
 # Wait for any in-flight planner to finish before taking over.
-while pgrep -f "test_rh_node.py|test_gradient_node.py|test_rh_tree_node.py|test_gradient_tree_node.py" > /dev/null; do sleep 20; done
+while pgrep -f "test_rh_node.py|test_gradient_node.py|test_rh_tree_node.py|test_gradient_tree_node.py|test_baseline_tree_node.py" > /dev/null; do sleep 20; done
 
 say "=== TREE LADDER START (stages: $STAGES | yaws: $YAWS | planners: $PLANNERS) ==="
 for stage in $STAGES; do

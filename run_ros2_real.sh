@@ -15,6 +15,15 @@
 #   ./run_ros2_real.sh
 #   PLANNER=gradient ./run_ros2_real.sh
 #   RH_K=20 RH_H=2 NUM_TRIALS=4 ./run_ros2_real.sh
+#
+# GERÇEK ROBOTA ÖZEL EK KNOB'LAR:
+#   HSV_S_MIN=80 HSV_V_MIN=60 HSV_WRAP=1 ...   run_hsv_test.sh'ta bulunan eşikleri
+#                                              bağlar (hsv_preload.py). Verilmezse
+#                                              simülasyondaki maske aynen kullanılır.
+#   HEALTH=0                                   görüş başına algı özetini kapatır
+#   HEALTH_ABORT_VIEWS=3                       ilk 3 görüşte ROI'de hedef sınıfı
+#                                              voxel'i oluşmazsa koşuyu durdurur
+#   DIAG_F1=1                                  voxel↔mesh mesafe teşhisini basar
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -66,6 +75,25 @@ export USE_SIM_TIME=false
 # get_target_position()'da mug dalı olmadığından TARGET_POS ile ezilir:
 export TARGET_POS="${TARGET_POS:-0.50,-0.30,0.90}"
 
+# GT mesh seçimi. TARGET verilmezse get_mesh_coordinates() varsayılan olarak
+# BUNNY mesh'ini yükler (viewpoint_planning.py:365) → F1/precision/recall
+# gerçek mug ile alakasız bir referansa karşı hesaplanır. Mug mesh'i en azından
+# doğru nesnenin CAD'i; yine de fiziksel mug'ın kayıtlı pozu olmadığı için
+# BU SAYILAR RAPORLANMAZ, sadece teşhis (DIAG_F1=1) için anlamlıdır.
+export TARGET="${TARGET:-mug}"
+
+# --- Sarmalayıcılar (ana dosyalar değişmeden çalışma anında monkeypatch) ---
+# 1) hsv_preload.py : HSV_* verildiğinde kırmızı maske eşiklerini dışarıdan bağlar
+# 2) real_health.py : her görüşte tek satır algı sağlık özeti basar (HEALTH=0 kapatır)
+WRAPPERS=()
+if [ "${HSV_TUNED:-0}" != "0" ] || \
+   [ -n "${HSV_H1_LO}${HSV_H1_HI}${HSV_S_MIN}${HSV_V_MIN}${HSV_WRAP}${HSV_H2_LO}${HSV_H2_HI}" ]; then
+    WRAPPERS+=("$SCRIPT_DIR/hsv_preload.py")
+fi
+if [ "${HEALTH:-1}" != "0" ]; then
+    WRAPPERS+=("$SCRIPT_DIR/real_health.py")
+fi
+
 RVIZ_CONFIG="$SCRIPT_DIR/src/viewpoint_planning/config/viewpoint_planning.rviz"
 RVIZ="${RVIZ:-1}"
 RVIZ_PID=""
@@ -78,10 +106,17 @@ fi
 echo "[run_ros2_real.sh] GERÇEK ROBOT | Planner: $PLANNER | $(basename $PYTHON_SCRIPT)"
 echo "[run_ros2_real.sh] use_sim_time=false — Gazebo YOK, gerçek UR5e+D455 bekleniyor."
 
+if [ ${#WRAPPERS[@]} -gt 0 ]; then
+    echo "[run_ros2_real.sh] Sarmalayıcılar: ${WRAPPERS[*]}"
+fi
+
+# set -e altında python hata verirse betik anında ölür ve RViz açık kalırdı;
+# çıkış kodunu yakalayıp temizliği garantiye alıyoruz.
+STATUS=0
 "$CONDA_PYTHON" -u \
+    "${WRAPPERS[@]}" \
     "$PYTHON_SCRIPT" \
-    --ros-args -p use_sim_time:=false "$@"
-STATUS=$?
+    --ros-args -p use_sim_time:=false "$@" || STATUS=$?
 
 [ -n "$RVIZ_PID" ] && kill "$RVIZ_PID" 2>/dev/null
 exit $STATUS

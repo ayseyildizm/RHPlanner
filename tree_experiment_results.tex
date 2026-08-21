@@ -1,10 +1,12 @@
 % Tree (tomato plant) experiment — results.
 % Companion to tree_experiment_setup.tex; requires booktabs and siunitx.
-% GradientNBV numbers are final (4/4 orientations valid at every level).
-% RH-NBV cells marked \todo are pending the reach-clamped reruns
-% (blossom x4, whole-plant y090/y180); fill from analyze_tree_results.py,
-% then bold the better value per row (higher = better for quality metrics,
-% lower = better for view counts and path length).
+% All numbers FINAL (both planners, 4/4 orientations valid at every level;
+% source: analyze_tree_results.py, 2026-07-15). Bold = better value per row
+% (higher for quality metrics, lower for view counts and path length).
+% Ablation subsection added 2026-07-18; single-orientation (psi=0) runs of
+% 2026-07-16..18, dirs abtest_occbonus0_run_* (excluded from the analyzer).
+% Baseline subsection (PSO/Random, 24 unclamped runs of 2026-07-18/19)
+% added 2026-07-19; PSO rows bypass the 16/20 move gate (see footnote).
 
 \section{Plant Experiment: Results}
 
@@ -90,11 +92,9 @@ planner generalises across object classes without adjustment.
 \subsection{Blossom level}
 \label{sec:tree-results-blossom}
 
-% TODO(RH rerun): fill the RH-NBV column from analyze_tree_results.py once the
-% reach-clamped blossom runs (4 orientations) finish; then bold per row and
-% write the discussion. Gradient column below is FINAL.
 Table~\ref{tab:tree-blossom-results} summarises the blossom-level
-reconstruction over the four plant orientations.
+reconstruction over the four plant orientations, and
+Figure~\ref{fig:tree-blossom-curves} shows the per-view progression.
 
 \begin{table}[t]
 \centering
@@ -103,16 +103,16 @@ reconstruction over the four plant orientations.
  & GradientNBV & RH-NBV \\
 \midrule
 \multicolumn{3}{l}{\itshape Reconstruction quality after 20 views} \\
-\quad ROI coverage (\%)     & $97.6 \pm 0.2$    & --- \\
-\quad $F_1$ score           & $0.932 \pm 0.040$ & --- \\
-\quad Recall                & $0.877 \pm 0.067$ & --- \\
+\quad ROI coverage (\%)     & $97.6 \pm 0.2$    & $\mathbf{98.6 \pm 0.3}$ \\
+\quad $F_1$ score           & $0.932 \pm 0.040$ & $\mathbf{0.965 \pm 0.009}$ \\
+\quad Recall                & $0.877 \pm 0.067$ & $\mathbf{0.941 \pm 0.011}$ \\
 \addlinespace
 \multicolumn{3}{l}{\itshape Convergence speed} \\
-\quad Views until \SI{80}{\percent} coverage & $4.0 \pm 0.0$ & --- \\
-\quad Views until \SI{90}{\percent} coverage & $7.5 \pm 1.1$ & --- \\
+\quad Views until \SI{80}{\percent} coverage & $4.0 \pm 0.0$ & $\mathbf{3.8 \pm 0.4}$ \\
+\quad Views until \SI{90}{\percent} coverage & $\mathbf{7.5 \pm 1.1}$ & $7.8 \pm 1.1$ \\
 \addlinespace
 \multicolumn{3}{l}{\itshape Motion cost} \\
-\quad End-effector path length (m) & $0.47 \pm 0.04$ & --- \\
+\quad End-effector path length (m) & $\mathbf{0.47 \pm 0.04}$ & $1.54 \pm 0.12$ \\
 \bottomrule
 \end{tabular}
 \caption{Blossom-level results on the tomato plant under natural occlusion;
@@ -125,19 +125,40 @@ of Section~\ref{sec:tree-setup}.}
 \label{tab:tree-blossom-results}
 \end{table}
 
-% TODO: \includegraphics{figures/tree/blossom_curves.pdf} once generated.
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/tree/blossom_curves.pdf}
+\caption{Blossom-level ROI coverage (left) and $F_1$ (right) per viewpoint,
+mean $\pm$ one standard deviation over the four plant orientations.}
+\label{fig:tree-blossom-curves}
+\end{figure}
+
+The blossom level inverts the difficulty profile of the fruit level: the
+three blossoms sit in the upper canopy and expose most of their surface to
+the viewpoint workspace, so raw coverage saturates for both planners --
+\SI{80}{\percent} after about four views, above \SI{97}{\percent} at the end
+of the budget, with near-identical convergence speed. The separation lies in
+reconstruction fidelity rather than coverage. GradientNBV's recall depends
+strongly on where the plant happens to occlude: it ranges from $0.78$ to
+$0.96$ over the four orientations ($0.877 \pm 0.067$), because blossom
+surfaces facing away from its locally confined vantage points are never
+voxelised. RH-NBV holds recall between $0.92$ and $0.95$ at every
+orientation ($0.941 \pm 0.011$), lifting $F_1$ to $0.965 \pm 0.009$ against
+$0.932 \pm 0.040$; as at the fruit level, the receding-horizon planner is
+not only better on average but markedly more consistent across occlusion
+patterns. Figure~\ref{fig:tree-blossom-curves} makes the mechanism visible:
+the coverage curves are barely distinguishable, whereas the $F_1$ curves
+separate after roughly nine views -- the point at which the freely visible
+surface is exhausted and further improvement requires actively seeking the
+occluded remainder. The price is again motion: $1.54$ vs.\
+\SI{0.47}{\metre} of end-effector path, roughly a factor of three.
 
 \subsection{Whole-plant level}
 \label{sec:tree-results-all}
 
-% TODO(RH rerun): RH-NBV column pending reach-clamped y090/y180 makeups; the
-% two currently valid orientations (y000, y270) give cov 91.2+-2.5,
-% F1 0.922+-0.042, traj 1.35+-0.57 — preliminary trend: GradientNBV LEADS at
-% this level (whole plant is mostly self-visible, so exploration pays less
-% and costs more motion). Report honestly; note y270 precision anomaly (0.79)
-% under investigation. Gradient column below is FINAL.
 Table~\ref{tab:tree-all-results} summarises the whole-plant reconstruction
-over the four plant orientations.
+over the four plant orientations, and
+Figure~\ref{fig:tree-all-curves} shows the per-view progression.
 
 \begin{table}[t]
 \centering
@@ -146,16 +167,16 @@ over the four plant orientations.
  & GradientNBV & RH-NBV \\
 \midrule
 \multicolumn{3}{l}{\itshape Reconstruction quality after 20 views} \\
-\quad ROI coverage (\%)     & $96.6 \pm 0.8$    & --- \\
-\quad $F_1$ score           & $0.992 \pm 0.002$ & --- \\
-\quad Recall                & $0.984 \pm 0.004$ & --- \\
+\quad ROI coverage (\%)     & $\mathbf{96.6 \pm 0.8}$    & $82.4 \pm 13.4$ \\
+\quad $F_1$ score           & $\mathbf{0.992 \pm 0.002}$ & $0.958 \pm 0.047$ \\
+\quad Recall                & $0.984 \pm 0.004$ & $\mathbf{0.985 \pm 0.009}$ \\
 \addlinespace
 \multicolumn{3}{l}{\itshape Convergence speed} \\
-\quad Views until \SI{80}{\percent} coverage & $4.0 \pm 0.0$ & --- \\
-\quad Views until \SI{90}{\percent} coverage & $8.8 \pm 0.8$ & --- \\
+\quad Views until \SI{80}{\percent} coverage & $\mathbf{4.0 \pm 0.0}$ & $12.0 \pm 5.7$\,$^{a}$ \\
+\quad Views until \SI{90}{\percent} coverage & $\mathbf{8.8 \pm 0.8}$ & $13.0$\,$^{b}$ \\
 \addlinespace
 \multicolumn{3}{l}{\itshape Motion cost} \\
-\quad End-effector path length (m) & $0.55 \pm 0.03$ & --- \\
+\quad End-effector path length (m) & $\mathbf{0.55 \pm 0.03}$ & $1.26 \pm 0.45$ \\
 \bottomrule
 \end{tabular}
 \caption{Whole-plant results on the tomato plant; mean $\pm$ standard
@@ -164,8 +185,267 @@ better value in each row: higher is better for the quality metrics, lower is
 better for the view counts and the path length. Coverage is the fraction of
 ground-truth plant surface points observed at least once; $F_1$ and recall
 use the \SI{10}{\milli\metre} matching threshold of
-Section~\ref{sec:tree-setup}.}
+Section~\ref{sec:tree-setup}.
+$^{a}$\,RH-NBV failed to reach \SI{80}{\percent} coverage within the 20-view
+budget at one orientation; the mean is computed over the remaining three.
+$^{b}$\,RH-NBV reached \SI{90}{\percent} coverage at only one of the four
+orientations; the value is that single run.}
 \label{tab:tree-all-results}
 \end{table}
 
-% TODO: \includegraphics{figures/tree/all_curves.pdf} once generated.
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/tree/all_curves.pdf}
+\caption{Whole-plant ROI coverage (left) and $F_1$ (right) per viewpoint,
+mean $\pm$ one standard deviation over the four plant orientations.}
+\label{fig:tree-all-curves}
+\end{figure}
+
+At the coarsest attention level the picture reverses. The whole plant is
+largely self-visible -- occlusion hides individual organs behind foliage,
+not the canopy as a whole -- and the local baseline exploits this:
+GradientNBV attains $96.6 \pm 0.8\,\%$ coverage and an $F_1$ of $0.992$ at
+every orientation while travelling only \SI{0.55}{\metre}. RH-NBV trails on
+every aggregate metric, and the deficit is not the product of a single
+unlucky run: even with its worst orientation excluded, its mean coverage
+($90.1\,\%$) remains below the baseline's worst single orientation
+($95.2\,\%$). When most of the target is observable from any reasonable
+vantage point, global exploration has little occluded surface left to
+convert, while its motion overhead ($2.3\times$ here) remains.\\
+
+Two orientation-specific failure modes widen the gap further. At
+$\psi = 180^\circ$ coverage plateaus at $59.5\,\%$: within the first six
+views nearly all voxels the planner models as observable have been observed,
+its information-gain field flattens, and with no utility gradient left the
+camera barely moves for the remaining budget (total path \SI{0.92}{\metre},
+the shortest of any RH-NBV run). The resulting model shows the complete
+plant silhouette with uniformly sparse leaf detail rather than a single
+blind region, and its $F_1$ of $0.992$ confirms that what was reconstructed
+is accurate -- the planner stopped looking, not mapping. At
+$\psi = 270^\circ$ coverage is normal ($88.7\,\%$) but spuriously occupied
+voxels depress precision to $0.79$ (recall $0.993$ is unaffected), pulling
+$F_1$ down to $0.880$.\\
+
+Note that final recall is near-saturated ($\approx 0.98$) and
+indistinguishable between the planners at this level: with the
+\SI{10}{\milli\metre} matching threshold on a densely foliaged plant,
+ground-truth points on unseen leaf faces are frequently matched by
+reconstructed voxels of nearby observed structure. Coverage, which requires
+every ground-truth point to have been directly observed, is therefore the
+discriminative quality metric here.\\
+
+Taken together, the three attention levels expose a consistent pattern: the
+value of receding-horizon exploration scales with how strongly the target is
+occluded. For the heavily self-occluded fruits it converts a plateaued
+reconstruction into a near-complete one; for the partially exposed blossoms
+it buys reconstruction fidelity at equal coverage; for the largely visible
+whole plant the local baseline is faster, cheaper, and more complete.
+Neither planner dominates across levels -- the appropriate choice is a
+property of the perception task, and specifically of how much of the target
+its attention level leaves hidden.
+
+\subsection{Ablation: receding-horizon search vs.\ occlusion bonus}
+\label{sec:tree-results-ablation}
+
+RH-NBV differs from the gradient baseline in two separable respects: it
+scores globally sampled candidate sequences over a receding horizon, and its
+utility augments the shared information-gain objective with an additive
+bonus (weight $2.0$) on voxels estimated to be occluded. To attribute the
+results of the preceding sections to these two components, we repeat one run
+per attention level at the $\psi = 0^\circ$ orientation with the base
+utility, i.e.\ the occlusion bonus removed and all other parameters
+unchanged. Under the base utility RH-NBV optimises exactly the same
+objective as GradientNBV, so this variant is the direct test of the
+receding-horizon search itself; comparing it against the full configuration
+used throughout Sections~\ref{sec:tree-results-fruit}\,--\,\ref{sec:tree-results-all}
+(bonus weight $2.0$) then isolates the contribution of the occlusion bonus.
+Table~\ref{tab:tree-ablation} reports both alongside the baseline.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{lccc}
+\toprule
+ & GradientNBV & \begin{tabular}{@{}c@{}}RH-NBV\\(base utility)\end{tabular}
+              & \begin{tabular}{@{}c@{}}RH-NBV\\(+ occlusion bonus)\end{tabular} \\
+\midrule
+\multicolumn{4}{l}{\itshape Fruit level} \\
+\quad ROI coverage (\%)   & $90.7$ & $94.9$ & $\mathbf{98.0}$ \\
+\quad $F_1$ score         & $0.972$ & $0.979$ & $\mathbf{0.994}$ \\
+\quad Views until \SI{90}{\percent} coverage & $15$ & $13$ & $\mathbf{8}$ \\
+\quad Coverage AUC (\%)   & $82.4$ & $72.6$ & $\mathbf{86.7}$ \\
+\quad Path length (m)     & $\mathbf{0.37}$ & $1.23$ & $2.84$ \\
+\addlinespace
+\multicolumn{4}{l}{\itshape Blossom level} \\
+\quad ROI coverage (\%)   & $97.5$ & $\mathbf{98.7}$ & $\mathbf{98.7}$ \\
+\quad $F_1$ score         & $0.954$ & $0.962$ & $\mathbf{0.977}$ \\
+\quad Views until \SI{90}{\percent} coverage & $\mathbf{6}$ & $8$ & $8$ \\
+\quad Coverage AUC (\%)   & $87.8$ & $\mathbf{88.5}$ & $\mathbf{88.5}$ \\
+\quad Path length (m)     & $\mathbf{0.42}$ & $1.53$ & $1.53$ \\
+\addlinespace
+\multicolumn{4}{l}{\itshape Whole-plant level} \\
+\quad ROI coverage (\%)   & $\mathbf{96.9}$ & $87.4$ & $93.6$ \\
+\quad $F_1$ score         & $\mathbf{0.991}$ & $0.986$ & $0.964$ \\
+\quad Views until \SI{90}{\percent} coverage & $\mathbf{10}$ & ---$^{a}$ & $13$ \\
+\quad Coverage AUC (\%)   & $\mathbf{85.8}$ & $57.2$ & $79.7$ \\
+\quad Path length (m)     & $\mathbf{0.54}$ & $1.42$ & $1.92$ \\
+\bottomrule
+\end{tabular}
+\caption{Occlusion-bonus ablation at the $\psi = 0^\circ$ orientation
+(single run per cell, 20 views). RH-NBV (base utility) removes the
+occlusion bonus and therefore optimises the identical objective as
+GradientNBV; RH-NBV (+ occlusion bonus, weight $2.0$) is the configuration
+of the preceding sections. Bold marks the best value per row (higher better
+for quality metrics and AUC, lower for view counts and path length).
+Coverage AUC is the mean ROI coverage over the 20-view budget and
+summarises convergence speed. $^{a}$\,Did not reach \SI{90}{\percent}
+coverage within the budget (\SI{80}{\percent} only at the final view).}
+\label{tab:tree-ablation}
+\end{table}
+
+The decomposition assigns each level's outcome to a different component. At
+the fruit level the receding-horizon search alone already outperforms the
+baseline it shares an objective with -- $94.9$ vs.\ $90.7\,\%$ coverage and
+a higher $F_1$ -- so the fruit-level advantage of
+Section~\ref{sec:tree-results-fruit} originates in the global candidate
+search, not in the modified utility. The occlusion bonus then chiefly buys
+convergence speed: it advances the \SI{90}{\percent}-coverage crossing from
+view $13$ to view $8$ and lifts the coverage AUC from $72.6$ to $86.7\,\%$,
+adding a further $3.1$ points of final coverage.\\
+
+At the blossom level the bonus is behaviourally inert: with the fixed
+candidate-sampling seed, both RH-NBV variants select the identical viewpoint
+sequence -- per-view path lengths agree to within a millimetre and the same
+single motion failure occurs at the same view -- and the residual metric
+differences are sensor noise. On a target whose surface is largely exposed,
+too few voxels are ever estimated as occluded for the bonus to change any
+candidate ranking, which confirms that the bonus does not distort planning
+where occlusion is absent.\\
+
+At the whole-plant level the bonus is what keeps RH-NBV competitive at all:
+without it the planner inherits the utility-saturation stall of
+Section~\ref{sec:tree-results-all} in aggravated form, passing
+\SI{80}{\percent} coverage only at the final view (coverage AUC $57.2$ vs.\
+$79.7\,\%$ with the bonus). Notably, under the shared objective the local
+gradient ascent is clearly superior to the global search here
+($96.9$ vs.\ $87.4\,\%$) -- when nearly everything is visible, fine local
+refinement progresses steadily while globally sampled candidates barely
+differ in utility. The whole-plant deficit of RH-NBV is therefore not an
+artefact of an overly aggressive bonus -- removing it widens the gap --
+but a property of the level itself. Across the three levels the pattern of
+Section~\ref{sec:tree-results-all} sharpens: the receding-horizon search
+supplies the advantage under heavy occlusion, the occlusion bonus
+accelerates and stabilises it, and neither mechanism pays where the target
+is already visible.
+
+\subsection{Comparison with sampling baselines (PSO and Random)}
+\label{sec:tree-results-baselines}
+
+To place the two-planner comparison in a broader context, the full
+three-level experiment was repeated with two additional baselines: a
+particle-swarm (PSO) viewpoint optimiser and a random neighbour sampler.
+Both planners were run \emph{unmodified}, under the identical protocol of
+the preceding sections -- the same per-level grid, voxel size, matching
+threshold, seeds, and viewpoint workspace, and the same driver-level
+camera extrinsic handling as the other planners. In particular, no
+reachability correction of any kind was applied to their commanded poses.
+Table~\ref{tab:tree-baselines} reports all four planners per attention
+level, and Figure~\ref{fig:tree-baselines-curves} shows the per-view
+progression.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+ & GradientNBV & RH-NBV & PSO$^{\dagger}$ & Random \\
+\midrule
+\multicolumn{5}{l}{\itshape Fruit level} \\
+\quad ROI coverage (\%)   & $92.9 \pm 2.8$ & $\mathbf{97.3 \pm 1.4}$ & $82.3 \pm 6.5$ & $96.1 \pm 0.5$ \\
+\quad $F_1$ score         & $0.961 \pm 0.014$ & $\mathbf{0.990 \pm 0.007}$ & $0.951 \pm 0.034$ & $0.971 \pm 0.010$ \\
+\quad Views until \SI{90}{\percent} cov. & $10.7 \pm 3.1$\,$^{a}$ & $\mathbf{8.5 \pm 2.2}$ & ---$^{b}$ & $\mathbf{8.5 \pm 0.9}$ \\
+\quad Coverage AUC (\%)   & $83.5 \pm 2.2$ & $\mathbf{86.0 \pm 1.5}$ & $69.2 \pm 11.1$ & $85.6 \pm 0.9$ \\
+\quad Path length (m)     & $\mathbf{0.44 \pm 0.12}$ & $2.50 \pm 0.62$ & $1.16 \pm 0.16$ & $1.77 \pm 0.00$\,$^{e}$ \\
+\addlinespace
+\multicolumn{5}{l}{\itshape Blossom level} \\
+\quad ROI coverage (\%)   & $97.6 \pm 0.2$ & $\mathbf{98.6 \pm 0.3}$ & $92.1 \pm 5.9$ & $93.5 \pm 0.1$ \\
+\quad $F_1$ score         & $0.932 \pm 0.040$ & $\mathbf{0.965 \pm 0.009}$ & $0.945 \pm 0.061$ & $0.947 \pm 0.029$ \\
+\quad Views until \SI{90}{\percent} cov. & $\mathbf{7.5 \pm 1.1}$ & $7.8 \pm 1.1$ & $5.7 \pm 3.1$\,$^{c}$ & $12.5 \pm 0.5$ \\
+\quad Coverage AUC (\%)   & $87.4 \pm 0.3$ & $\mathbf{88.2 \pm 0.6}$ & $84.1 \pm 5.2$ & $83.7 \pm 0.2$ \\
+\quad Path length (m)     & $\mathbf{0.47 \pm 0.04}$ & $1.54 \pm 0.12$ & $1.85 \pm 0.92$ & $1.77 \pm 0.00$\,$^{e}$ \\
+\addlinespace
+\multicolumn{5}{l}{\itshape Whole-plant level} \\
+\quad ROI coverage (\%)   & $\mathbf{96.6 \pm 0.8}$ & $82.4 \pm 13.4$ & $95.7 \pm 2.0$ & $84.9 \pm 0.3$ \\
+\quad $F_1$ score         & $0.992 \pm 0.002$ & $0.958 \pm 0.047$ & $\mathbf{0.998 \pm 0.001}$ & $0.989 \pm 0.006$ \\
+\quad Views until \SI{90}{\percent} cov. & $\mathbf{8.8 \pm 0.8}$ & $13.0$\,$^{d}$ & $11.3 \pm 6.0$ & ---$^{b}$ \\
+\quad Coverage AUC (\%)   & $\mathbf{86.1 \pm 0.3}$ & $65.6 \pm 13.4$ & $82.4 \pm 5.6$ & $74.4 \pm 0.4$ \\
+\quad Path length (m)     & $\mathbf{0.55 \pm 0.03}$ & $1.26 \pm 0.45$ & $2.73 \pm 0.46$ & $1.70 \pm 0.12$ \\
+\bottomrule
+\end{tabular}
+\caption{Four-planner comparison on the tomato plant; mean $\pm$ standard
+deviation over the four plant orientations (20 views per run). Bold marks
+the best value per row (higher better for quality metrics and AUC, lower
+for view counts and path length).
+$^{\dagger}$\,PSO's commanded poses were frequently unreachable for the
+arm: its per-run motion success ranged from $2/20$ to $10/20$ views
+(fruit $3$--$5$, blossom $2$--$8$, whole plant $7$--$10$), below the
+$16/20$ validity criterion applied to the other planners; its rows are
+reported for completeness and reflect only the executed views.
+$^{a}$\,One orientation never reached the threshold; mean over the
+remaining three. $^{b}$\,No orientation reached the threshold.
+$^{c}$\,Mean over the three orientations that reached the threshold.
+$^{d}$\,Reached at a single orientation. $^{e}$\,The seeded random walk
+commands an identical, yaw-invariant viewpoint sequence at every
+orientation, hence zero variance.}
+\label{tab:tree-baselines}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/tree/baselines_curves.pdf}
+\caption{Four-planner ROI coverage (left) and $F_1$ (right) per viewpoint
+at the three attention levels, mean $\pm$ one standard deviation over the
+four plant orientations. PSO curves aggregate all four runs regardless of
+the motion-success criterion (Table~\ref{tab:tree-baselines}, footnote
+$\dagger$); its wide bands and stepped coverage reflect views spent on
+unreachable poses.}
+\label{fig:tree-baselines-curves}
+\end{figure}
+
+Three observations emerge. First, the fruit level delivers a result that
+strengthens the central claim of this chapter from an unexpected
+direction: the \emph{random} sampler outperforms GradientNBV at every
+orientation ($96.1 \pm 0.5$ vs.\ $92.9 \pm 2.8\,\%$ coverage) while
+matching RH-NBV's convergence speed ($8.5$ views to \SI{90}{\percent}).
+Under heavy occlusion, undirected viewpoint diversity alone recovers more
+hidden surface than informed local refinement -- the gradient planner's
+weakness at this level is not a calibration issue but a structural
+limitation of local search. RH-NBV nevertheless leads all four planners on
+every fruit-level quality metric, showing that \emph{informed} exploration
+still adds a further $1.2$ coverage points and $0.019$ $F_1$ over blind
+diversity.\\
+
+Second, PSO illustrates the practical failure mode of
+reachability-unaware global optimisation. The viewpoints it reaches are
+excellent -- at the whole-plant level its executed views yield the best
+$F_1$ of the entire experiment ($0.998$) and near-Gradient coverage
+($95.7$ vs.\ $96.6\,\%$) -- but fewer than half of its commanded poses are
+executable at any level, and at the fruit level its coverage collapses to
+$82.3\,\%$ with the largest variance in the table. Its swarm concentrates
+on high-gain regions of the camera-parameter box with no notion of the
+arm's kinematic envelope, a constraint the other three planners largely
+respect by construction (GradientNBV and Random through local steps around
+reachable poses, RH-NBV through its reach model).\\
+
+Third, the whole-plant level separates the two exploratory baselines in an
+instructive way: Random plateaus at $84.9\,\%$ -- almost exactly RH-NBV's
+$82.4\,\%$ -- while the exploitative planners (GradientNBV, and PSO's
+executed views) exceed $95\,\%$. This mirrors the ablation of
+Section~\ref{sec:tree-results-ablation} from the opposite side: when the
+target is largely visible, \emph{any} diversity-driven strategy pays a
+coverage penalty, whether the diversity is random or information-driven.
+Taken together with the two-planner results, the four-planner comparison
+sharpens the chapter's conclusion into a single spectrum: as target
+occlusion increases, the best strategy shifts from local refinement
+(GradientNBV) through undirected diversity (Random) to informed
+receding-horizon exploration (RH-NBV) -- and the appropriate planner is a
+property of the attention level, not of the planner ranking at any single
+level.

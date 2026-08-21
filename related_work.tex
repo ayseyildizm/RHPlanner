@@ -1,0 +1,300 @@
+%=====================================================================
+% Chapter: Related Work
+% Positions the RH-NBV planner against the receding-horizon exploration,
+% volumetric information-gain, and targeted/semantic NBV literature.
+% Requires: amsmath, booktabs.
+%=====================================================================
+\chapter{Related Work}
+\label{ch:related-work}
+
+Active vision addresses the question of where a robot should place its
+sensor next so that perception improves as quickly as possible. The
+strategy proposed in this thesis draws on four largely separate lines of
+work: (i)~receding-horizon exploration planning, (ii)~receding-horizon
+planning for active object reconstruction, (iii)~volumetric
+information-gain formulations, and (iv)~targeted, semantics-aware local
+next-best-view planning. This chapter reviews each line in turn, states
+the objective functions and strategies used by the original works, and
+closes by identifying the gap that the proposed planner fills.
+
+%---------------------------------------------------------------------
+\section{Next-Best-View and Frontier-Based Exploration}
+\label{sec:rw-nbv}
+
+The next-best-view (NBV) problem---selecting the sensor pose that is
+expected to reveal the most new information about a scene---dates back to
+\textcite{connolly1985}, who iteratively selected the view exposing the
+largest unmapped volume. Frontier-based exploration
+\parencite{yamauchi1997} instead steers the sensor towards the boundaries
+between known free and unknown space, and remains a strong baseline for
+volumetric exploration. Both families are \emph{myopic}: each decision
+optimises a single next measurement without considering how it
+constrains the measurements that follow. Modern volumetric planners
+typically maintain a probabilistic occupancy map such as OctoMap
+\parencite{hornung2013}, in which each voxel~$x$ carries an occupancy
+probability $P_o(x)$ that is updated with every registered depth
+measurement; the planners considered below all operate on such a map or
+on a dense-grid variant of it.
+
+%---------------------------------------------------------------------
+\section{Receding-Horizon Exploration Planning}
+\label{sec:rw-rh-exploration}
+
+\textcite{bircher2016} introduced the receding-horizon
+``next-best-view'' planner (NBVP) for the autonomous exploration of
+unknown 3D spaces with aerial robots, later extended to unified
+exploration and surface inspection in \textcite{bircher2018}. At every
+planning iteration, NBVP grows a geometric random tree (RRT) of
+collision-free vehicle configurations $\xi$ in the currently known free
+space. The quality of a tree node $n_k$ is the cumulative unmapped
+volume visible along its branch, discounted exponentially by the path
+cost:
+%
+\begin{equation}
+  \mathbf{Gain}(n_k) \;=\; \mathbf{Gain}(n_{k-1})
+  \;+\; \mathbf{Visible}\bigl(\mathcal{M}, \xi_k\bigr)\,
+        e^{-\lambda c\left(\sigma_{k-1}^{k}\right)},
+  \label{eq:rw-bircher-gain}
+\end{equation}
+%
+where $\mathcal{M}$ is the occupancy map,
+$\mathbf{Visible}(\mathcal{M},\xi_k)$ is the unmapped volume observable
+from configuration $\xi_k$, $c(\sigma_{k-1}^{k})$ is the Euclidean cost
+of the path segment connecting $\xi_{k-1}$ to $\xi_k$, and $\lambda$
+penalises expensive motions. The defining strategy is the
+\emph{receding-horizon} execution: although a whole branch is evaluated,
+only its \emph{first edge} is executed, after which the tree is rebuilt
+on the updated map and the process repeats. This closes the loop between
+planning and perception in the manner of receding-horizon (model
+predictive) controllers and makes the planner robust to mapping and
+tracking errors. However, NBVP reasons purely about unmapped
+\emph{volume}: it carries no notion of a target object, no semantics,
+and its gain recursion (Eq.~\ref{eq:rw-bircher-gain}) simply accumulates
+the visible volume of successive nodes without simulating how earlier
+views along the branch would change the map that later views observe.
+
+%---------------------------------------------------------------------
+\section{Receding-Horizon Planning for Active Reconstruction}
+\label{sec:rw-rh-reconstruction}
+
+\textcite{zhang2022} transferred the receding-horizon idea from
+free-flying exploration to \emph{active 3D reconstruction} with a
+high-DoF manipulator carrying an eye-in-hand RGB-D camera. Their view
+path planner builds an exploration tree by forward sampling directly in
+joint space, which guarantees reachability and bounded pose change by
+construction. Each voxel~$x$ contributes its occupancy entropy
+%
+\begin{equation}
+  \mathcal{H}(x) \;=\; -P_o(x)\ln P_o(x) \;-\; \bar{P}_o(x)\ln \bar{P}_o(x),
+  \qquad \bar{P}_o(x) = 1 - P_o(x),
+  \label{eq:rw-zhang-entropy}
+\end{equation}
+%
+and the information gain of a view $v$ averages this entropy over all
+voxels $\mathcal{X}$ intersected by the ray set $\mathcal{R}_v$:
+%
+\begin{equation}
+  \mathcal{IG}(v) \;=\; \frac{1}{n}
+  \sum_{\forall r \in \mathcal{R}_v}\;\sum_{\forall x \in \mathcal{X}}
+  \mathcal{H}(x).
+  \label{eq:rw-zhang-ig}
+\end{equation}
+%
+The utility of a path is again accumulated iteratively with an
+exponential path-cost weight, $f(\mathcal{M},\xi_k) =
+f(\mathcal{M},\xi_{k-1}) + \mathcal{IG}(v_k)\,
+e^{\lambda c\left(p_{k-1}^{k}\right)}$, and, to counter the myopia of
+greedy NBV, the robot commits to only the first $l$ of the $m$ nodes of
+the best branch before replanning. Their experiments over eight
+volumetric information-gain metrics showed the multi-step planner
+outperforming single-step NBV with hand-designed view spheres. Still,
+the method reconstructs \emph{whole objects}: the gain treats every
+uncertain voxel equally, there is no semantic prioritisation of a target
+region, and---as the authors note themselves---the planner receives no
+feedback from the reconstruction quality of the part of the scene that
+actually matters for a downstream task.
+
+%---------------------------------------------------------------------
+\section{Volumetric Information-Gain Formulations}
+\label{sec:rw-ig-metrics}
+
+Which quantity a planner should maximise is a design decision in its own
+right. \textcite{delmerico2018} systematically compared volumetric
+information (VI) formulations for active object reconstruction. Their
+\emph{occlusion-aware} VI weights the entropy of each voxel by the
+likelihood that a ray actually reaches it, i.e.\ by the product of the
+emptiness probabilities of the voxels traversed before it:
+%
+\begin{equation}
+  P_v(x_n) \;=\; \prod_{i=0}^{n-1} \bar{P}_o(x_i),
+  \qquad
+  \mathcal{I}_v(x_n) \;=\; P_v(x_n)\, \mathcal{H}(x_n),
+  \label{eq:rw-delmerico-oa}
+\end{equation}
+%
+so that voxels hidden behind probably-occupied space contribute little.
+They further proposed VIs that concentrate on task-relevant regions,
+most notably the \emph{rear side voxel} and \emph{rear side entropy}
+formulations, which restrict the summation to unobserved voxels
+$\mathcal{S}_o$ expected to lie on the far side of already-observed
+surfaces,
+%
+\begin{equation}
+  \mathcal{I}_b(x) =
+  \begin{cases}
+    1 & x \in \mathcal{S}_o \\
+    0 & x \notin \mathcal{S}_o
+  \end{cases},
+  \qquad
+  \mathcal{I}_n(x) \;=\; \mathcal{I}_b(x)\,\mathcal{I}_v(x),
+  \label{eq:rw-delmerico-rse}
+\end{equation}
+%
+since a ray incident on the unknown back side of a surface is very
+likely to reveal previously unobserved object structure. The candidate
+views themselves are drawn from a static view space (a cylinder or
+sphere around the object) and scored greedily with a cost-weighted
+utility $\,\mathcal{U}_v = (1-\gamma)\,\mathcal{G}_v / \sum_\mathcal{V}
+\mathcal{G} - \gamma\, \mathcal{C}_v / \sum_\mathcal{V} \mathcal{C}$.
+These formulations supply the theoretical vocabulary---visibility
+weighting, rear-side reasoning, gain--cost trade-off---used throughout
+this thesis, but the study concerns one-step view selection from a fixed
+view space, not multi-step planning.
+
+%---------------------------------------------------------------------
+\section{Targeted, Semantics-Aware Local NBV Planning}
+\label{sec:rw-gradient-nbv}
+
+Closest to this work, \textcite{burusa2024} formulated NBV planning as a
+\emph{local, targeted} perception problem: rather than covering a whole
+scene, the camera must quickly improve the perception of a single target
+plant node inside a region of interest (ROI), despite heavy occlusion.
+Scene knowledge is maintained in a GPU-resident multi-channel voxel grid
+storing, per voxel, the occupancy probability $p_o(x)$, a semantic class
+label $c_s(x)$ with probability $p_s(x)$, and an ROI indicator. The
+utility of a viewpoint $\xi = \{p^c, p^t\}$ (camera position and target
+point) is its expected \emph{semantic} information gain, computed by
+differentiable ray sampling: along every ray $r$, $N_r$ points are
+sampled and each contributes its semantic Shannon entropy weighted by
+the accumulated transmittance,
+%
+\begin{align}
+  I_s(r) &= \sum_{i=1}^{N_r} T(i)\, I_s(i),
+  &
+  T(i) &= \prod_{j=1}^{i-1}\bigl(1 - p_o(j)\bigr),
+  \label{eq:rw-burusa-ray}
+  \\
+  I_s(i) &= -p_s(i)\log_2 p_s(i) - \bigl(1-p_s(i)\bigr)\log_2\bigl(1-p_s(i)\bigr),
+  &
+  I_s(\xi) &= \sum_{r \in \mathcal{R}} I_s(r).
+  \label{eq:rw-burusa-utility}
+\end{align}
+%
+Because the interpolation of grid values is differentiable with respect
+to $\xi$, the planner ascends the utility gradient directly,
+$\xi_{k+1} = \xi_k + \alpha\, \partial I_s(\xi_k)/\partial \xi_k$,
+avoiding candidate sampling altogether. GradientNBV matched the
+reconstruction accuracy of a sampling-based semantic NBV planner while
+using ten times fewer ray-tracing calls and producing 28\% shorter
+trajectories. Two limitations motivate the present work. First, the
+planner is \emph{single-step}: each gradient ascent optimises the very
+next view only, so sequences of views are never reasoned about jointly.
+Second, gradient ascent is inherently local; in strongly occluded,
+non-convex utility landscapes it is prone to premature convergence.
+\textcite{verlinden2024pso} demonstrated this empirically by replacing
+the gradient step with particle swarm optimisation (PSO), in which a
+swarm of candidate viewpoints $x_i$ evolves according to
+%
+\begin{equation}
+  v_i(t+1) = w\,v_i(t) + c_1 r_1 \bigl(p_i - x_i(t)\bigr)
+                       + c_2 r_2 \bigl(g - x_i(t)\bigr),
+  \qquad
+  x_i(t+1) = x_i(t) + v_i(t+1),
+  \label{eq:rw-pso}
+\end{equation}
+%
+with $p_i$ and $g$ the personal- and global-best positions: on occluded
+scenes the population-based search reached roughly 70\% ROI coverage
+where low-learning-rate gradient ascent stagnated near 40\%, at the
+price of substantially longer trajectories and higher computation. The
+tension is thus between locality (smooth, cheap, but myopic and
+trap-prone) and global search (robust but expensive and erratic).
+
+%---------------------------------------------------------------------
+\section{Discussion and Research Gap}
+\label{sec:rw-gap}
+
+Table~\ref{tab:rw-comparison} summarises the reviewed strategies. The
+receding-horizon planners \parencite{bircher2016, bircher2018,
+zhang2022} are non-myopic but semantically blind: they maximise unmapped
+volume or plain occupancy entropy over whole scenes or objects.
+Conversely, the targeted planners \parencite{burusa2024,
+verlinden2024pso} are semantics-aware and ROI-focused but plan a single
+view at a time. Moreover, none of the reviewed methods simulates the
+effect of its own planned measurements on the map \emph{within} the
+planning horizon: Bircher's gain recursion
+(Eq.~\ref{eq:rw-bircher-gain}) and Zhang's accumulated utility both sum
+per-node gains on the \emph{current} map, so two nearby views in one
+branch are rewarded twice for the same unknown voxels.
+
+\begin{table}[t]
+  \centering
+  \caption{Comparison of the reviewed viewpoint-planning strategies with
+  the proposed planner.}
+  \label{tab:rw-comparison}
+  \begin{tabular}{lccccc}
+    \toprule
+    & \multicolumn{1}{c}{Multi-step}
+    & \multicolumn{1}{c}{Semantic,}
+    & \multicolumn{1}{c}{Belief forward}
+    & \multicolumn{1}{c}{Manipulator,}
+    & \multicolumn{1}{c}{Escapes local}\\
+    Method
+    & (non-myopic)
+    & ROI-targeted
+    & simulation
+    & local perception
+    & optima \\
+    \midrule
+    NBVP \parencite{bircher2016,bircher2018} & \checkmark & -- & -- & -- & --\\
+    RH--VPP \parencite{zhang2022}            & \checkmark & -- & -- & \checkmark & --\\
+    VI metrics \parencite{delmerico2018}     & -- & -- & -- & -- & --\\
+    GradientNBV \parencite{burusa2024}       & -- & \checkmark & -- & \checkmark & --\\
+    PSO--NBV \parencite{verlinden2024pso}    & -- & \checkmark & -- & \checkmark & \checkmark\\
+    \textbf{RH--NBV (ours)}                  & \checkmark & \checkmark & \checkmark & \checkmark & \checkmark\\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The planner proposed in this thesis closes this gap by embedding the
+transmittance-weighted \emph{semantic} utility of
+Eqs.~\ref{eq:rw-burusa-ray}--\ref{eq:rw-burusa-utility} inside a
+receding-horizon objective over $H$-step candidate view sequences
+$(\xi_1,\dots,\xi_H)$,
+%
+\begin{equation}
+  J \;=\; \sum_{k=0}^{H-1} \gamma^{k}
+  \Bigl[\, f_{\mathrm{inc}}\bigl(\mathcal{M}_{\mathrm{pred}}, \xi_k\bigr)
+  \;-\; \lambda\, C\bigl(\xi_{k-1}, \xi_k\bigr) \Bigr],
+  \label{eq:rw-ours}
+\end{equation}
+%
+where $\gamma \in (0,1]$ is a discount factor prioritising near-term
+gains, $C$ is the Euclidean motion cost weighted by $\lambda$, and
+$f_{\mathrm{inc}}$ is an \emph{incremental} information gain evaluated
+on a predicted map $\mathcal{M}_{\mathrm{pred}}$ that is rolled forward
+after every hypothetical view, so that later steps of a sequence are
+only credited for information not already gathered by earlier ones. As
+in \textcite{bircher2016}, only the first view of the best sequence is
+executed before replanning. Candidate sequences combine tangential
+orbit steps around the target with occasional random jumps, retaining
+the smooth local trajectories of \textcite{burusa2024} without relying
+on gradients, and a stagnation-detection mechanism relocates the camera
+when ROI coverage plateaus, addressing the local-optimum failure mode
+identified by \textcite{verlinden2024pso}. The rear-side intuition of
+\textcite{delmerico2018} is available as an optional occlusion-bonus
+term that rewards views uncovering occupied yet semantically uncertain
+voxels. The result is, to the best of our knowledge, the first planner
+that unites non-myopic receding-horizon planning, semantic
+target-focused information gain, and in-horizon belief forward
+simulation for local perception with a robotic manipulator.

@@ -1,0 +1,182 @@
+@startuml class_diagram
+' RecedingHorizon — Detailed UML class diagram (appendix figure)
+' Render: plantuml -tsvg class_diagram.puml  (or -tpdf for LaTeX)
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam linetype ortho
+hide empty members
+
+package "viewpoint_planning (driver nodes)" {
+  class test_rh_node <<ROS2 Node>> {
+    NUM_ITERS : int
+    RH_PARAMS : dict
+    make_run_dir()
+    save_plots()
+  }
+}
+
+package "viewpoint_planners" {
+  class ViewpointPlanning <<Orchestrator>> {
+    -camera_pose : np.ndarray
+    -rh_params : dict
+    -coverages_rh, f1_rh, sigma_rh : np.ndarray
+    +run_rh() : tuple
+    +config()
+    +spawn_frontal_occlusion()
+    +get_rh_metrics() : dict
+  }
+
+  class RHPlanner {
+    -current_pos : Tensor
+    -horizon : int
+    -num_candidates : int
+    -lambda_cost, discount : float
+    +rh_view(current_coverage) : tuple
+    +generate_candidate_sequence(start) : Tensor
+    +evaluate_sequence(seq) : float
+    +compute_gain_on_grid(pos) : float
+    +predict_update(...)
+    +motion_cost(prev, next) : float
+    +update_voxel_grid(depth, semantics, pose) : float
+    +calculate_F1() : tuple
+    +compute_sigma() : float
+  }
+
+  class RHPlannerBox
+
+  class GradientNBVPlanner {
+    -optimizer : torch.optim
+    +next_best_view() : tuple
+    +loss(target_pos) : Tensor
+    +update_voxel_grid(...)
+    +calculate_F1() : tuple
+  }
+
+  class RandomPlanner {
+    +random_view() : np.ndarray
+    +update_voxel_grid(...)
+  }
+
+  class PsoPlanner {
+    -particles, velocities
+    +pso_view() : np.ndarray
+    +update() : np.ndarray
+  }
+
+  class SamplingPlanner {
+    +sampling_view() : tuple
+    +compute_gain(pos) : float
+  }
+
+  abstract class PlannerEvalMixin <<mixin>> {
+    +get_occupied_points()
+    +calculate_F1() : tuple
+    +compute_occluded_recall() : float
+    +compute_sigma() : float
+  }
+
+  class ViewpointSampler {
+    +sample(type) : np.ndarray
+    +semi_cylindrical_sampler(...)
+    +random_neighbour_sampler(...)
+    +predefine_start_pose(...)
+  }
+
+  class NodeKalmanFilter {
+    -x : np.ndarray «state (3)»
+    -P : np.ndarray «covariance»
+    +predict()
+    +update(z, R)
+    +position() : np.ndarray
+    +sigma_scalar() : float
+  }
+}
+
+package "scene_representation" {
+  class VoxelGrid {
+    -occupancy_log_odds : Tensor
+    -semantic_conf : Tensor
+    +insert_depth_and_semantics(...) : float
+    +compute_gain(pose) : Tensor
+    +entropy(probs) : Tensor
+    +set_target_roi(params)
+    +get_occupied_points() : Tensor
+  }
+  class RaySampler {
+    +generate_camera_coords()
+    +ray_origins_directions(...)
+    +transform_points(...)
+  }
+}
+
+package "perception" {
+  class Perceiver {
+    +run() : tuple
+    +color_segmentation(img) : mask
+    +assign_semantics(...) : Tensor
+    +extract_node_position(...) : tuple
+  }
+  class RealsenseROSCapturer {
+    -color_image, depth_image, points
+    +get_frames() : tuple
+    -color_callback(msg)
+    -depth_callback(msg)
+    -points_callback(msg)
+  }
+}
+
+package "robot / abb_control" {
+  class ArmControlClient {
+    +move_arm_to_pose(pose) : bool
+    +get_camera_pose() : np.ndarray
+  }
+  class arm_control_node <<C++ / MoveIt>>
+}
+
+package "common / utils" {
+  class SDFSpawner {
+    +spawn_box(pos, id)
+    +spawn_named_model(...)
+    +delete_box()
+  }
+  class RvizVisualizer {
+    +visualize_voxels(...)
+    +visualize_viewpoint(pose)
+    +visualize_rois(...)
+  }
+}
+
+class "torch.nn.Module" as nnModule <<external>>
+class "RealSense L515\n(Gazebo / real)" as Camera <<external>>
+
+test_rh_node ..> ViewpointPlanning : uses
+
+ViewpointPlanning *-- RHPlanner
+ViewpointPlanning *-- Perceiver
+ViewpointPlanning *-- ArmControlClient
+ViewpointPlanning *-- ViewpointSampler
+ViewpointPlanning *-- SDFSpawner
+
+RHPlanner <|-- RHPlannerBox
+PlannerEvalMixin <|-- RandomPlanner
+PlannerEvalMixin <|-- PsoPlanner
+nnModule <|-- GradientNBVPlanner
+
+RHPlanner *-- VoxelGrid
+GradientNBVPlanner *-- VoxelGrid
+RandomPlanner *-- VoxelGrid
+PsoPlanner *-- VoxelGrid
+SamplingPlanner *-- VoxelGrid
+VoxelGrid *-- RaySampler
+
+RHPlanner o-- RvizVisualizer
+GradientNBVPlanner o-- RvizVisualizer
+SamplingPlanner o-- RvizVisualizer
+RandomPlanner o-- ViewpointSampler
+
+Perceiver *-- RealsenseROSCapturer
+Perceiver ..> NodeKalmanFilter : 3D position measurement +\nuncertainty (Burusa IV-A)
+
+ArmControlClient ..> arm_control_node : move_arm_to_pose (ROS 2 service)
+RealsenseROSCapturer ..> Camera : /camera/* topics
+@enduml
